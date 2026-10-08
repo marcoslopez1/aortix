@@ -31,3 +31,7 @@ resultados/*
 # Validación: las imágenes y el procesado intermedios se regeneran
 validacion/imagenes/
 validacion/procesado/
+
+# Imágenes reales de prueba (locales, nunca al repositorio)
+muestras/
+imagenes/

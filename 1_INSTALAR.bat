@@ -21,7 +21,7 @@ if not exist ".venv\Scripts\python.exe" (
 )
 echo Instalando librerias...
 ".venv\Scripts\python.exe" -m pip install --upgrade pip
-".venv\Scripts\python.exe" -m pip install numpy scipy opencv-python scikit-image pydicom matplotlib pandas scikit-learn SimpleITK pillow
+".venv\Scripts\python.exe" -m pip install -r requirements.txt
 if errorlevel 1 (
   echo.
   echo *** ERROR al instalar. Haz una captura de esta ventana y enviala. ***
@@ -30,7 +30,8 @@ if errorlevel 1 (
 )
 echo.
 echo Intentando instalar PyRadiomics (opcional; si falla no pasa nada)...
-".venv\Scripts\python.exe" -m pip install pyradiomics >nul 2>nul
+".venv\Scripts\python.exe" -m pip install https://github.com/AIM-Harvard/pyradiomics/archive/refs/heads/master.zip >nul 2>nul
+if errorlevel 1 ".venv\Scripts\python.exe" -m pip install pyradiomics >nul 2>nul
 if errorlevel 1 (echo PyRadiomics no se ha podido instalar: el programa funciona igual.) else (echo PyRadiomics instalado.)
 echo.
 echo ============================================================

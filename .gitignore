@@ -1,0 +1,33 @@
+# Entorno de Python
+.venv/
+__pycache__/
+*.pyc
+
+# Archivos locales de la aplicación
+ultima_calibracion.json
+resultados/errores.log
+
+# Resultados: solo se guardan en el repositorio los de las imágenes sintéticas.
+# Los de imágenes reales se quedan en el ordenador (nunca datos de pacientes en el proyecto).
+resultados/*
+!resultados/sintetico_*
+
+# Imágenes: solo se guardan las sintéticas y el ejemplo publicado.
+*.dcm
+*.DCM
+*.dicom
+*.png
+*.PNG
+*.jpg
+*.JPG
+*.jpeg
+*.JPEG
+!datos_sinteticos/*
+!ejemplo_real/*
+!ejemplo_real/resultados/*
+!resultados/sintetico_*
+!validacion/*.png
+
+# Validación: las imágenes y el procesado intermedios se regeneran
+validacion/imagenes/
+validacion/procesado/

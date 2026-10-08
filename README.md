@@ -10,26 +10,32 @@ las medidas clásicas y las características de forma y textura que alimentarán
 | `1_INSTALAR.bat` · `2_ANALIZAR_IMAGEN.bat` | **Doble clic**: instalar (una vez) y analizar imágenes. |
 | `app.py` | La aplicación con ventanas que abre `2_ANALIZAR_IMAGEN.bat`. |
 | `procesar.py` | El procesado completo (pasos 4.1 a 4.7). Acepta DICOM, PNG o JPG, o una carpeta entera. |
-| `calibrar.py` | Calibra imágenes PNG/JPG (capturas o figuras de artículos), que no traen la calibración del DICOM. |
+| `autocalibrar.py` | Calibración **automática** de capturas PNG/JPG: lee la escala de velocidad, las marcas de tiempo y la línea de base de la propia imagen. |
+| `calibrar.py` | Calibración manual por línea de comandos (uso avanzado). |
 | `sintetico.py` | Genera imágenes **sintéticas** de CW con valores conocidos, para probar el código. |
 | `validar_sintetico.py` | Compara la medición automática con los valores reales (Bland-Altman, ICC). |
 | `datos_sinteticos/` | 3 imágenes de ejemplo (severa, moderada, leve) en DICOM y PNG. |
 | `resultados/` | Salida del procesado de esas imágenes. |
 | `validacion/` | Resultado de la validación con 15 imágenes sintéticas (50 latidos). |
 | `ejemplo_real/` | La imagen real que enviaste, calibrada y procesada. |
+| `muestras/` | Imágenes reales de prueba. **Solo en tu ordenador**: no se suben al repositorio. |
 
 ## 1. Uso con doble clic (Windows)
 
 1. **Solo la primera vez:** doble clic en **`1_INSTALAR.bat`**. Se abre una ventana negra que instala todo y termina con «LISTO». Si no tienes Python, te dirá dónde descargarlo; al instalarlo marca *«Add Python to PATH»*.
-2. **Cada vez que quieras analizar:** doble clic en **`2_ANALIZAR_IMAGEN.bat`** → botón **«Analizar imagen…»** → eliges la imagen (o varias).
-3. Si la imagen es PNG/JPG (o un DICOM sin calibración) se abre una ventana que te pide **6 clics**:
-   esquina superior izquierda y esquina inferior derecha del espectro · línea de base · una marca de la escala (te pregunta su valor, p. ej. −4) · dos marcas de tiempo (te pregunta los segundos entre ellas).
-   La calibración se guarda junto a la imagen y no se vuelve a pedir.
-   Con la casilla **«Usar la misma calibración que la imagen anterior»** (activada por defecto) solo calibras la primera imagen: las siguientes del mismo tamaño usan esa misma calibración, también en otra sesión. Desactívala si cambias de ecógrafo, de escala de velocidad o de velocidad de barrido. Los DICOM con calibración propia nunca la piden.
+2. **Cada vez que quieras analizar:** doble clic en **`2_ANALIZAR_IMAGEN.bat`** → botón **«Analizar imágenes…»** → eliges la imagen (o varias).
+3. **La calibración es automática.** Los DICOM traen la suya. En las capturas PNG/JPG el programa lee de la propia imagen:
+   - la línea de base (la línea naranja) y la región del espectro;
+   - la escala de velocidad: lee los números de la regla de la derecha, en cm/s o m/s;
+   - la escala de tiempo: las marcas más altas del eje inferior están separadas 1 segundo.
+
+   Como comprobación compara la FC de las ondas R del ECG con la que marca la pantalla. Si no coinciden, lo avisa en rojo.
+   Solo si la calibración automática falla se abre la ventana de **6 clics** (esquinas del espectro · línea de base · una marca de la escala · dos marcas de tiempo).
+   La casilla **«Calibrar a mano»** fuerza esa ventana aunque la automática funcione. La calibración manual se guarda junto a la imagen y tiene prioridad en adelante.
    Puedes elegir varias imágenes a la vez: se procesan seguidas y al final se abre la carpeta de resultados.
 4. Al terminar se abre la **figura de control**. Todo queda en la carpeta **`resultados`** (botón «Abrir carpeta de resultados»).
 
-En `ejemplo_real/` está la figura del JASE 2017 (Philips, 150 mm/s) ya calibrada y procesada: Vmax 4,29 m/s, gradiente medio 46 mmHg, ET ≈ 275 ms (la figura marca ≈ 279 ms).
+En `ejemplo_real/` está la figura del JASE 2017 (Philips, 150 mm/s) ya calibrada y procesada: Vmax 4,30 m/s, gradiente medio 45 mmHg, ET ≈ 275-280 ms (la figura marca ≈ 279 ms).
 
 ## 2. Uso avanzado (terminal, opcional)
 
@@ -45,14 +51,30 @@ Para cada imagen:
 
 - **`<imagen>_control.png`**: la figura de control de calidad, que es lo que debe revisar el ecocardiografista. Muestra:
   - la imagen original con la región detectada;
-  - el espectro con la envolvente en rojo, el inicio (verde) y el fin (azul) de la eyección, y las ondas R;
+  - el espectro con la curva medida en rojo, el inicio (verde) y el fin (azul) de la eyección, las ondas R (▼) y el latido más desfavorable (★);
+  - en gris, los latidos **descartados** (reverberaciones, curvas cortadas, formas que no son de eyección), con el motivo debajo de la tabla;
   - las curvas normalizadas;
-  - una tabla de medidas por latido.
+  - una tabla de medidas por latido, con el más desfavorable, la media y el CV.
 - **`<imagen>_latidos.csv`**: una fila por latido con todas las variables.
 - **`<imagen>_curva_normalizada.csv`**: la curva de cada latido y la media, en 101 puntos (tiempo/ET frente a velocidad/Vmax). Es la entrada para el PCA funcional.
 - **`<imagen>_latidoN_normalizado.png`**: el espectro de cada latido reescalado a 128×128 en coordenadas normalizadas. Es la entrada para textura o redes neuronales.
 
-Para el conjunto: **`resumen_imagenes.csv`**, con una fila por imagen (media de los latidos) y el coeficiente de variación entre latidos. Es la tabla que se une a la hoja de recogida de datos por el ID del paciente.
+Para el conjunto: **`resumen_imagenes.csv`**, con una fila por imagen. Es la tabla que se une a la hoja de recogida de datos por el ID del paciente.
+
+- Las columnas principales (`vmax_ms`, `grad_medio_mmHg`, `forma_*`…) son las del **latido más desfavorable**. Es el latido válido con mayor Vmax; si el ritmo es irregular, se excluyen los latidos tras una pausa larga, cuya velocidad está aumentada.
+- Las columnas `media_*` son la media de todos los latidos válidos y las columnas `cv_*` son el coeficiente de variación entre latidos.
+- `latido_referencia`, `n_descartados` y `motivos_descarte` indican qué latido se ha usado y qué se ha descartado.
+- `calibracion`, `fc_pantalla_lpm` y `avisos_calibracion` indican el origen de la calibración y el resultado de la comprobación con la FC.
+
+### Control de calidad de cada latido
+
+Un latido se descarta si:
+- su duración está fuera de 150-600 ms;
+- su pico está en un extremo de la eyección;
+- pasa mucho tiempo a baja velocidad tras el pico (típico de una reverberación pegada a la curva);
+- se aparta mucho de una curva que sube hasta el pico y luego baja;
+- está cortado por el borde de la imagen;
+- con ECG disponible, no empieza en los 300 ms siguientes a una onda R o dura más del 75 % del ciclo.
 
 ### Variables extraídas (unas 130 por imagen)
 
@@ -83,7 +105,10 @@ Para el conjunto: **`resumen_imagenes.csv`**, con una fila por imagen (media de 
 
 ## 4. Validación
 
-**Imagen real** (`ejemplo_real/`): la envolvente sigue el borde del chorro en los dos latidos; ET medido ≈ 270-280 ms frente a ≈ 279 ms marcados en la propia figura.
+**Imagen real** (`ejemplo_real/`): la envolvente sigue el borde del chorro en los dos latidos; ET medido ≈ 275-280 ms frente a ≈ 279 ms marcados en la propia figura.
+
+**Calibración automática** (4 capturas reales Philips, en `muestras/`): las cuatro se calibran solas. La FC calculada con la escala de tiempo detectada coincide con la de la pantalla (74/74, 63/60, 57/58 y 76/76 lpm).
+Las calibraciones manuales anteriores de P003 y P004 tenían mal la escala de tiempo (213 y 151 px/s frente a los 355 y 252 px/s reales). Por eso los ET y los VTI salían imposibles.
 
 **Imágenes sintéticas** (`python validar_sintetico.py --n 5`; 15 imágenes, 50 latidos):
 
@@ -108,10 +133,15 @@ Al principio de `procesar.py`, en el diccionario `PARAM`:
 - `nivel_borde` (0,5): dónde se coloca la envolvente dentro del borde difuso. Los valores bajos siguen el "plumeado" y los altos el borde denso.
 - `v_min_latido`, `et_min`, `et_max`: los criterios para aceptar un latido.
 - `nivel_inicio_fin` (5 % de Vmax): el umbral que define el inicio y el fin de la eyección.
+- `hampel_t`, `hueco_max`, `tramo_min`: limpieza de la envolvente. Eliminan los picos aislados, rellenan los huecos del granulado dentro del chorro e ignoran las manchas sueltas fuera de él.
+- `suavizado_cima` (30 ms): suavizado de la parte alta de cada latido. No toca el inicio ni el fin, que son bruscos de verdad.
+- `cola_max`, `irregularidad_max`, `u_pico_min/max`, `r_inicio_max`, `et_max_rr`: los criterios del control de calidad de cada latido.
+- `pausa_rr` (1,2): a partir de qué RR previo (× mediana) un latido se considera «tras pausa» y no se usa como referencia.
 
 ## 6. Limitaciones conocidas
 
 - Las anotaciones grabadas **dentro** del espectro (calipers, trazados del operador) solo se eliminan si son de color. Las que son blancas o grises se confunden con señal. Lo mejor es exportar las imágenes sin medir.
-- Los ecógrafos que no guardan la *Sequence of Ultrasound Regions* en el DICOM necesitan pasar por `calibrar.py`.
+- La calibración automática está hecha y probada con capturas de **Philips**. Se basa en la línea de base naranja, la regla de velocidad a la derecha y las marcas de 1 s abajo. Con otros equipos lo normal es que falle y pida la calibración manual. Los DICOM con calibración propia no tienen este problema.
+- Cuando la punta del chorro es muy tenue y con rayas verticales, la envolvente sigue el borde denso y no el plumeado. La Vmax puede quedar algo por debajo de la que trazaría a mano el ecocardiografista. Hay que contrastarla con el informe.
 - En una sola imagen solo se analizan los latidos completos. En fibrilación auricular conviene que haya al menos 5.
 - Con figuras de artículos, que suelen ser JPEG pequeños y recortados, la precisión es menor. Sirven para probar el código, no para el estudio.

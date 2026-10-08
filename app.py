@@ -269,7 +269,7 @@ class App(tk.Tk):
     COLUMNAS = [("imagen", "Imagen", 220, "w"), ("latidos", "Latidos", 70, "center"),
                 ("vmax", "Vmax (m/s)", 95, "center"), ("grad", "Grad. medio (mmHg)", 140, "center"),
                 ("vti", "VTI (cm)", 85, "center"), ("atet", "AT/ET", 75, "center"),
-                ("estado", "Estado", 150, "w")]
+                ("estado", "Estado", 190, "w")]
 
     def __init__(self):
         super().__init__()
@@ -326,7 +326,7 @@ class App(tk.Tk):
         cab_tab.pack(fill="x", padx=20, pady=(14, 8))
         tk.Label(cab_tab, text="Resultados de esta sesión", font=(FUENTE, 13, "bold"), fg=C["texto"],
                  bg=C["tarjeta"]).pack(side="left")
-        tk.Label(cab_tab, text="Doble clic en una fila para ver su figura de control",
+        tk.Label(cab_tab, text="Valores del latido más desfavorable · doble clic en una fila para ver su figura",
                  font=(FUENTE, 9), fg=C["suave"], bg=C["tarjeta"]).pack(side="right")
         marco = tk.Frame(tab, bg=C["tarjeta"])
         marco.pack(fill="both", expand=True, padx=20)
@@ -474,15 +474,22 @@ class App(tk.Tk):
             if res["n_latidos"] == 0:
                 self.escribir("  No se detectó ningún latido completo. Revisa la figura de control "
                               "o repite la calibración.\n", "error")
-                fila = self.fila(res["imagen"], ["0", "–", "–", "–", "–", "Sin latidos completos"], "aviso")
+                fila = self.fila(res["imagen"], ["0", "–", "–", "–", "–", "Sin latidos válidos"], "aviso")
             else:
+                ref = int(res["latido_referencia"])
                 self.escribir(
-                    f"  {res['n_latidos']} latidos · Vmax {res['vmax_ms']:.2f} m/s · "
-                    f"grad. medio {res['grad_medio_mmHg']:.1f} mmHg · VTI {res['vti_cm']:.1f} cm · "
-                    f"AT/ET {res['at_et']:.2f}\n")
+                    f"  {res['n_latidos']} latidos válidos · latido más desfavorable L{ref}: "
+                    f"Vmax {res['vmax_ms']:.2f} m/s · grad. medio {res['grad_medio_mmHg']:.1f} mmHg · "
+                    f"VTI {res['vti_cm']:.1f} cm · AT/ET {res['at_et']:.2f}\n")
+                if res["n_descartados"]:
+                    self.escribir(f"  Descartados {res['n_descartados']}: {res['motivos_descarte']}\n")
+                estado = f"✓ L{ref} de {res['n_latidos']}"
+                if res["n_descartados"]:
+                    estado += f" · {res['n_descartados']} descart."
                 fila = self.fila(res["imagen"], [
                     res["n_latidos"], f"{res['vmax_ms']:.2f}", f"{res['grad_medio_mmHg']:.1f}",
-                    f"{res['vti_cm']:.1f}", f"{res['at_et']:.2f}", "✓ Correcto"], "ok")
+                    f"{res['vti_cm']:.1f}", f"{res['at_et']:.2f}", estado],
+                    "aviso" if res.get("avisos_calibracion") else "ok")
             self.figuras[fila] = fig
             self.actualizar_resumen(res)
             self.escribir(f"  Figura de control: {fig}\n")

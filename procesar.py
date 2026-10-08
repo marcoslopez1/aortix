@@ -39,10 +39,21 @@ PARAM = dict(
     suavizado_t=0.002,        # s: suavizado temporal del granulado
     suavizado_v=0.03,         # m/s: suavizado en velocidad del granulado
     mediana_t=0.005,          # s: filtro de mediana sobre la envolvente
+    suavizado_env=0.015,      # s: ventana del suavizado final (Savitzky-Golay) de la envolvente
+    suavizado_cima=0.03,      # s: suavizado adicional de la parte alta de cada latido (no toca los bordes)
+    hampel_t=0.025,           # s: ventana del filtro que elimina picos aislados de la envolvente
+    hueco_max=0.15,           # m/s: huecos del granulado dentro del chorro que se rellenan
+    tramo_min=0.08,           # m/s: manchas más cortas que esto, fuera del chorro, se ignoran
     nivel_borde=0.5,          # punto del borde (0 = fondo, 1 = interior) donde se sitúa la envolvente
     v_min_latido=0.6,         # m/s: velocidad mínima para considerar que hay eyección
     nivel_inicio_fin=0.05,    # inicio/fin de eyección: cruce del 5 % de Vmax (sobre el nivel diastólico)
     et_min=0.15, et_max=0.60, # s: duración aceptable de una eyección
+    u_pico_min=0.08, u_pico_max=0.75,  # posición aceptable del pico (fracción de ET)
+    cola_max=0.35,            # fracción máxima de la eyección por debajo del 40 % de Vmax tras el pico
+    irregularidad_max=0.05,   # desviación máxima respecto a una curva unimodal (fracción de Vmax)
+    r_inicio_max=0.30,        # s: retraso máximo entre la onda R y el inicio de la eyección
+    et_max_rr=0.75,           # la eyección no puede durar más que esta fracción del ciclo (RR)
+    pausa_rr=1.2,             # RR previo > 1,2 × mediana: latido tras pausa (no se usa de referencia)
     anchura_clic=0.02,        # s: estructuras más estrechas (clics valvulares) se eliminan
     n_puntos_norm=101,        # muestras de la curva normalizada
     tam_img_norm=128,         # tamaño de la imagen normalizada de cada latido (para textura / CNN)
@@ -240,15 +251,13 @@ def extraer_envolvente(S, cal, p=PARAM):
     fondo = float(np.median(Sf[~b])) if (~b).any() else 0.0
     n_f, n_c = Sf.shape
     env_px = np.zeros(n_c)
+    hueco_max = max(2, int(round(p["hueco_max"] * cal["px_por_ms"])))   # huecos del granulado
+    tramo_min = max(3, int(round(p["tramo_min"] * cal["px_por_ms"])))   # manchas sueltas
     for c in range(n_c):
-        filas = np.flatnonzero(b[:, c])
-        if filas.size < 3:
+        tramos = _tramos(b[:, c], hueco_max, tramo_min)
+        if not tramos:
             continue
-        fin = int(filas[-1])
-        # tramo continuo que termina en el borde exterior
-        ini = fin
-        while ini > 0 and b[ini - 1, c]:
-            ini -= 1
+        ini, fin = tramos[-1]  # tramo más exterior, ya sin manchas sueltas
         if fin - ini < 3:
             continue
         # refinamiento subpíxel: cruce del nivel intermedio entre interior y fondo (en unidades de ruido)
@@ -264,8 +273,9 @@ def extraer_envolvente(S, cal, p=PARAM):
             cruce = min(cruce, i + 1)
         env_px[c] = cruce if cruce is not None else fin
     v = env_px / cal["px_por_ms"]
+    v = _hampel(v, max(5, int(round(p["hampel_t"] * cal["px_por_s"])) | 1))
     v = ndimage.median_filter(v, max(3, int(round(p["mediana_t"] * cal["px_por_s"])) | 1))
-    w = max(5, int(round(0.015 * cal["px_por_s"])) | 1)
+    w = max(5, int(round(p["suavizado_env"] * cal["px_por_s"])) | 1)
     v = signal.savgol_filter(v, w, 2)
     return np.clip(v, 0, None), Sf, b, fondo
 
@@ -292,6 +302,28 @@ def quitar_clics(Sf, cal, p=PARAM):
     return Sf, clic
 
 
+def _tramos(col, hueco_max, tramo_min):
+    """Tramos (ini, fin) de una columna binaria, uniendo huecos pequeños y quitando tramos cortos."""
+    d = np.flatnonzero(np.diff(np.r_[0, col.astype(np.int8), 0]))
+    tramos = []
+    for a, z in zip(d[::2], d[1::2] - 1):
+        if tramos and a - tramos[-1][1] - 1 <= hueco_max:
+            tramos[-1][1] = z
+        else:
+            tramos.append([a, z])
+    return [(a, z) for a, z in tramos if z - a + 1 >= tramo_min]
+
+
+def _hampel(v, ventana, k=3.0):
+    """Sustituye por la mediana local los puntos que se alejan más de k desviaciones (MAD) de ella."""
+    med = ndimage.median_filter(v, ventana)
+    mad = 1.4826 * ndimage.median_filter(np.abs(v - med), ventana)
+    malo = np.abs(v - med) > k * np.maximum(mad, 0.05)
+    out = v.copy()
+    out[malo] = med[malo]
+    return out
+
+
 def _quitar_pequenos(b, minimo):
     n, lab, st, _ = cv2.connectedComponentsWithStats(b.astype(np.uint8), 8)
     keep = np.zeros(n, bool)
@@ -302,7 +334,8 @@ def _quitar_pequenos(b, minimo):
 # =============================================================================
 # 4. Latidos
 # =============================================================================
-def separar_latidos(v, cal, p=PARAM):
+def separar_latidos(v, cal, p=PARAM, r_peaks=None, v_tope=None):
+    """Latidos candidatos. Cada uno lleva 'motivo' = None si es válido o la razón para descartarlo."""
     fs = cal["px_por_s"]
     activo = v > max(p["v_min_latido"], 0.15 * np.percentile(v, 99))
     activo = ndimage.binary_closing(activo, np.ones(max(3, int(0.05 * fs)), bool))
@@ -323,16 +356,85 @@ def separar_latidos(v, cal, p=PARAM):
         t_on = _cruce(v, ipk, nivel, lado=-1)
         t_off = _cruce(v, ipk, nivel, lado=+1)
         if t_on is None or t_off is None or t_on < 3 or t_off > len(v) - 4:
-            continue
-        et = (t_off - t_on) / fs
-        if not (p["et_min"] <= et <= p["et_max"]):
-            continue
-        if latidos and t_on < latidos[-1]["i_off"]:
-            if vpk <= v[latidos[-1]["i_pk"]]:
+            continue  # sin inicio o fin claros, o cortado por el borde
+        lat = dict(i_on=t_on, i_off=t_off, i_pk=ipk)
+        lat["motivo"] = motivo_descarte(v, lat, cal, p, r_peaks, v_tope)
+        validos = [l for l in latidos if l["motivo"] is None]
+        if lat["motivo"] is None and validos and t_on < validos[-1]["i_off"]:
+            # dos latidos válidos solapados: se queda el de mayor velocidad
+            if vpk <= v[validos[-1]["i_pk"]]:
                 continue
-            latidos.pop()
-        latidos.append(dict(i_on=t_on, i_off=t_off, i_pk=ipk))
+            latidos.remove(validos[-1])
+        latidos.append(lat)
     return latidos
+
+
+def motivo_descarte(v, lat, cal, p=PARAM, r_peaks=None, v_tope=None):
+    """Control de calidad de un latido: devuelve None si parece una curva de eyección aórtica
+    o un texto breve con el motivo para descartarlo (reverberaciones, artefactos, curvas cortadas…)."""
+    fs = cal["px_por_s"]
+    et = (lat["i_off"] - lat["i_on"]) / fs
+    if not (p["et_min"] <= et <= p["et_max"]):
+        return f"duración fuera de rango ({et * 1000:.0f} ms)"
+    t, vv = curva_latido(v, lat, cal, p=p)
+    vpk = vv.max()
+    ipk = int(np.argmax(vv))
+    u_pico = ipk / max(len(vv) - 1, 1)
+    if not (p["u_pico_min"] <= u_pico <= p["u_pico_max"]):
+        return f"pico en un extremo de la eyección ({u_pico:.2f}·ET)"
+    cola = np.mean(vv[ipk:] < 0.4 * vpk) * (len(vv) - ipk) / len(vv)
+    if cola > p["cola_max"]:
+        return "cola larga a baja velocidad (posible reverberación)"
+    if _irregularidad(vv) > p["irregularidad_max"]:
+        return "forma irregular (no es una curva de eyección)"
+    if v_tope is not None and vpk > 0.97 * v_tope:
+        return "curva cortada por el borde inferior de la imagen"
+    if r_peaks is not None and len(r_peaks) >= 2:
+        r = np.asarray(r_peaks)
+        if r.min() < lat["i_on"] - 0.05 * fs and r.max() > lat["i_off"]:  # el ECG cubre el latido
+            previas = r[r <= lat["i_on"] + 0.02 * fs]
+            if not previas.size or (lat["i_on"] - previas[-1]) / fs > p["r_inicio_max"]:
+                return "no empieza tras una onda R del ECG"
+            siguientes = r[r > previas[-1]]
+            if siguientes.size:
+                rr = (siguientes[0] - previas[-1]) / fs
+                if et > p["et_max_rr"] * rr:
+                    return f"más larga que el ciclo cardiaco ({et * 1000:.0f} ms, RR {rr * 1000:.0f} ms)"
+    return None
+
+
+def _irregularidad(vv):
+    """Desviación (relativa a Vmax) respecto a la curva unimodal más parecida (sube hasta el pico y baja)."""
+    from sklearn.isotonic import IsotonicRegression
+    i = int(np.argmax(vv))
+    sube = IsotonicRegression(increasing=True).fit_transform(np.arange(i + 1), vv[:i + 1])
+    baja = IsotonicRegression(increasing=False).fit_transform(np.arange(len(vv) - i), vv[i:])
+    ajuste = np.r_[sube, baja[1:]]
+    return float(np.sqrt(np.mean((vv - ajuste) ** 2)) / max(vv.max(), 1e-6))
+
+
+def latido_referencia(df, lats, r_peaks, cal, p=PARAM):
+    """Índice (en df) del latido más desfavorable: el de mayor Vmax entre los válidos.
+
+    Con ritmo irregular se evitan los latidos tras una pausa larga (p. ej., postextrasistólicos),
+    porque su velocidad está aumentada y no representan la válvula."""
+    if not len(df):
+        return None, ""
+    candidatos = list(range(len(df)))
+    criterio = "mayor Vmax"
+    if r_peaks is not None and len(r_peaks) >= 3 and len(df) >= 3:
+        r = np.asarray(r_peaks)
+        rr_med = np.median(np.diff(r))
+        tras_pausa = []
+        for i, lat in enumerate(lats):
+            previas = r[r <= lat["i_on"]]
+            if previas.size >= 2 and (previas[-1] - previas[-2]) > p["pausa_rr"] * rr_med:
+                tras_pausa.append(i)
+        if tras_pausa and len(tras_pausa) < len(candidatos):
+            candidatos = [i for i in candidatos if i not in tras_pausa]
+            criterio += " (sin latidos tras pausa)"
+    i = max(candidatos, key=lambda j: df.iloc[j]["vmax_ms"])
+    return i, criterio
 
 
 def _cruce(v, ipk, nivel, lado):
@@ -345,16 +447,25 @@ def _cruce(v, ipk, nivel, lado):
     return None
 
 
-def curva_latido(v, lat, cal, dt=0.001):
-    """Curva del latido remuestreada a 1 ms, con rampas lineales hasta cero en los extremos."""
+def curva_latido(v, lat, cal, dt=0.001, p=PARAM):
+    """Curva del latido remuestreada a 1 ms, con rampas lineales hasta cero en los extremos.
+
+    La parte alta de la curva (por encima de ~40 % de Vmax) se suaviza más que los bordes: ahí los
+    dientes son granulado del borde del chorro, mientras que el inicio y el fin son bruscos de verdad."""
     fs = cal["px_por_s"]
     t0, t1 = lat["i_on"] / fs, lat["i_off"] / fs
     t = np.arange(t0, t1 + dt / 2, dt)
     tc = np.arange(len(v)) / fs
     vv = np.interp(t, tc, v)
+    w = int(round(p["suavizado_cima"] / dt)) | 1
+    if len(vv) > w + 2:
+        suave = signal.savgol_filter(vv, w, 2)
+        rel = vv / max(vv.max(), 1e-6)
+        peso = np.clip((rel - 0.3) / 0.2, 0, 1)   # 0 por debajo del 30 % de Vmax, 1 por encima del 50 %
+        vv = peso * suave + (1 - peso) * vv
     # extremos: rampa lineal hasta cero desde el primer/último punto por encima del 5 % de Vmax
     vpk = vv.max()
-    on_ramp = np.flatnonzero(vv >= PARAM["nivel_inicio_fin"] * vpk)
+    on_ramp = np.flatnonzero(vv >= p["nivel_inicio_fin"] * vpk)
     if on_ramp.size:
         a, z = on_ramp[0], on_ramp[-1]
         vv[:a] = np.linspace(0, vv[a], a, endpoint=False) if a > 0 else vv[:a]
@@ -565,12 +676,15 @@ def procesar(ruta, salida, ruta_calib=None, ruta_verdad=None, p=PARAM, nombre=No
     gris, ecg, yb = preprocesar(rgb, cal)
     S, direccion = lado_del_flujo(gris, yb, cal)
     v, Sf, binaria, fondo = extraer_envolvente(S, cal, p)
-    lats = separar_latidos(v, cal, p)
     r_peaks = ecg_r(ecg, cal)
+    todos = separar_latidos(v, cal, p, r_peaks=r_peaks, v_tope=S.shape[0] / cal["px_por_ms"])
+    lats = [l for l in todos if l["motivo"] is None]
+    descartados = [l for l in todos if l["motivo"] is not None]
 
-    filas, curvas, imgs = [], [], []
+    filas, curvas, imgs, trazos = [], [], [], []
     for k, lat in enumerate(lats, 1):
-        t, vv = curva_latido(v, lat, cal)
+        t, vv = curva_latido(v, lat, cal, p=p)
+        trazos.append((t + lat["i_on"] / cal["px_por_s"], vv))  # curva medida, en tiempo absoluto
         m = medidas_clasicas(t, vv)
         u, f, fm = forma_normalizada(t, vv)
         img_n, mask_n = imagen_normalizada(Sf, v, lat, cal)
@@ -591,12 +705,19 @@ def procesar(ruta, salida, ruta_calib=None, ruta_verdad=None, p=PARAM, nombre=No
         fc = 60 / (np.median(np.diff([l["i_on"] for l in lats])) / cal["px_por_s"])
     else:
         fc = np.nan
-    resumen = dict(imagen=nombre, n_latidos=len(lats), fc_lpm=fc, direccion_flujo=direccion,
+    i_ref, criterio = latido_referencia(df, lats, r_peaks, cal, p)
+    resumen = dict(imagen=nombre, n_latidos=len(lats), n_descartados=len(descartados),
+                   motivos_descarte="; ".join(f"{l['i_on'] / cal['px_por_s']:.2f} s: {l['motivo']}"
+                                              for l in descartados),
+                   latido_referencia=int(df.iloc[i_ref]["latido"]) if i_ref is not None else np.nan,
+                   criterio_referencia=criterio, fc_lpm=fc, direccion_flujo=direccion,
                    calibracion=cal.get("fuente"), px_por_ms=cal["px_por_ms"], px_por_s=cal["px_por_s"],
                    fc_pantalla_lpm=cal.get("fc_pantalla"), avisos_calibracion=cal.get("avisos_calibracion", ""))
     if len(df):
         num = df.select_dtypes("number").drop(columns=["latido", "inicio_s"])
-        resumen.update(num.mean().to_dict())
+        # valores principales: los del latido más desfavorable; además, la media de todos los latidos
+        resumen.update(num.iloc[i_ref].to_dict())
+        resumen.update({f"media_{k}": v_ for k, v_ in num.mean().to_dict().items()})
         for col in ("vmax_ms", "grad_medio_mmHg", "vti_cm", "at_et"):
             resumen[f"cv_{col}"] = float(df[col].std() / df[col].mean()) if len(df) > 1 else np.nan
         curva_media = np.mean(curvas, 0)
@@ -614,7 +735,8 @@ def procesar(ruta, salida, ruta_calib=None, ruta_verdad=None, p=PARAM, nombre=No
         with open(ruta_verdad) as fh:
             verdad = json.load(fh)
     figura_control(rgb, cal, S, v, lats, curvas, r_peaks, direccion, df, resumen, verdad,
-                   os.path.join(salida, f"{nombre}_control.png"))
+                   os.path.join(salida, f"{nombre}_control.png"), trazos=trazos,
+                   descartados=descartados, i_ref=i_ref)
     return resumen, df, verdad
 
 
@@ -628,7 +750,8 @@ def emparejar(df, verdad, tol=0.06):
     return pares
 
 
-def figura_control(rgb, cal, S, v, lats, curvas, r_peaks, direccion, df, resumen, verdad, ruta):
+def figura_control(rgb, cal, S, v, lats, curvas, r_peaks, direccion, df, resumen, verdad, ruta,
+                   trazos=None, descartados=(), i_ref=None):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -649,18 +772,30 @@ def figura_control(rgb, cal, S, v, lats, curvas, r_peaks, direccion, df, resumen
     t = np.arange(S.shape[1]) / fs
     vmax_vis = S.shape[0] / pm
     ax1.imshow(S, cmap="gray", aspect="auto", extent=[0, t[-1], vmax_vis, 0])
-    ax1.plot(t, v, color="#ff5a36", lw=1.2, label="envolvente")
+    ax1.plot(t, v, color="#ff5a36", lw=0.7, alpha=0.45)  # envolvente sin suavizar
+    for lat in descartados:
+        ax1.axvspan(lat["i_on"] / fs, lat["i_off"] / fs, color="#9aa4ae", alpha=0.25, lw=0)
+        ax1.text((lat["i_on"] + lat["i_off"]) / 2 / fs, 0.35, "✗ descartado", color="#e0e4e8",
+                 ha="center", fontsize=7)
     for k, lat in enumerate(lats, 1):
         ax1.axvline(lat["i_on"] / fs, color="#3ddc84", lw=0.9)
         ax1.axvline(lat["i_off"] / fs, color="#2fb5ff", lw=0.9)
-        ax1.plot(lat["i_pk"] / fs, v[lat["i_pk"]], "o", ms=4, color="#ffd23f")
-        ax1.text(lat["i_pk"] / fs, v[lat["i_pk"]] + 0.25, f"L{k}", color="#ffd23f", ha="center", fontsize=8)
+        if trazos:
+            tt, vv = trazos[k - 1]
+            ax1.plot(tt, vv, color="#ff5a36", lw=1.4)  # curva medida
+            tp, vp = tt[int(np.argmax(vv))], vv.max()
+        else:
+            tp, vp = lat["i_pk"] / fs, v[lat["i_pk"]]
+        ref = i_ref is not None and k - 1 == i_ref
+        ax1.plot(tp, vp, "*" if ref else "o", ms=9 if ref else 4, color="#ffd23f")
+        ax1.text(tp, vp + 0.3, f"L{k}" + (" ★" if ref else ""), color="#ffd23f", ha="center", fontsize=8)
     for r in r_peaks:
         ax1.plot(r / fs, 0.08, "v", color="#3ddc84", ms=5)
     ax1.set_ylim(vmax_vis, 0)
     ax1.set_xlabel("tiempo (s)")
     ax1.set_ylabel("velocidad (m/s)")
-    ax1.set_title(f"Semiespectro del flujo aórtico ({direccion}) · verde = inicio, azul = fin, ▼ = onda R", fontsize=10)
+    ax1.set_title(f"Flujo aórtico, {direccion.split(' (')[0]} · verde = inicio · azul = fin · ▼ = onda R · "
+                  "★ = latido más desfavorable · gris = descartado", fontsize=10)
 
     ax2 = fig.add_subplot(gs[1, 0])
     u = np.linspace(0, 1, PARAM["n_puntos_norm"])
@@ -682,12 +817,14 @@ def figura_control(rgb, cal, S, v, lats, curvas, r_peaks, direccion, df, resumen
                   ("AT (ms)", "at_ms", "{:.0f}"), ("ET (ms)", "et_ms", "{:.0f}"), ("AT/ET", "at_et", "{:.3f}")]
         verdad_k = {"vmax_ms": "vmax_ms", "grad_medio_mmHg": "grad_medio_mmHg", "grad_pico_mmHg": "grad_pico_mmHg",
                     "vti_cm": "vti_cm", "at_ms": "at_ms", "et_ms": "et_ms", "at_et": "at_et"}
-        cab = ["Medida"] + [f"L{k}" for k in df["latido"]] + ["Media", "CV"]
+        k_ref = int(df.iloc[i_ref]["latido"]) if i_ref is not None else None
+        cab = (["Medida"] + [f"L{k}" + (" ★" if k == k_ref else "") for k in df["latido"]]
+               + [f"Más desfav. (L{k_ref})", "Media", "CV"])
         if verdad:
             cab += ["Real (media)", "Error %"]
         celdas = []
         for lab, col, fmt in claves:
-            fila = [lab] + [fmt.format(x) for x in df[col]] + [fmt.format(df[col].mean()),
+            fila = [lab] + [fmt.format(x) for x in df[col]] + [fmt.format(df[col].iloc[i_ref]), fmt.format(df[col].mean()),
                                                                f"{df[col].std() / df[col].mean() * 100:.1f} %" if len(df) > 1 else "–"]
             if verdad:
                 emparejados = emparejar(df, verdad)
@@ -707,7 +844,7 @@ def figura_control(rgb, cal, S, v, lats, curvas, r_peaks, direccion, df, resumen
         fc_txt = f"FC: {resumen['fc_lpm']:.0f} lpm"
         if resumen.get("fc_pantalla_lpm"):
             fc_txt += f" (pantalla {resumen['fc_pantalla_lpm']:.0f})"
-        extra = (f"Latidos analizados: {len(df)}   ·   {fc_txt}   ·   "
+        extra = (f"Latidos válidos: {len(df)} (descartados: {len(descartados)})   ·   {fc_txt}   ·   "
                  f"Calibración: {resumen['calibracion']} ({cal['px_por_ms']:.1f} px/(m/s), {cal['px_por_s']:.0f} px/s)\n"
                  f"Forma: pico en {df['forma_u_pico'].mean():.2f}·ET · factor de forma {df['forma_area_norm'].mean():.3f} · "
                  f"asimetría {df['forma_asimetria'].mean():+.3f} · anchura al 80 % {df['forma_anchura_80'].mean():.2f}\n"
@@ -715,11 +852,16 @@ def figura_control(rgb, cal, S, v, lats, curvas, r_peaks, direccion, df, resumen
                  f"ensanchamiento IQR {df['tex_ensanchamiento_iqr_rel'].mean():.2f} · "
                  f"anchura del plumeado {df['tex_anchura_pluma_ms'].mean():.2f} m/s")
         ax3.text(0.5, 0.08, extra, ha="center", va="bottom", fontsize=9, transform=ax3.transAxes)
-        if resumen.get("avisos_calibracion"):
-            ax3.text(0.5, 0.0, "⚠ " + resumen["avisos_calibracion"], ha="center", va="bottom", fontsize=9,
-                     color="#d14343", transform=ax3.transAxes)
     else:
-        ax3.text(0.5, 0.5, "No se detectaron latidos completos", ha="center", fontsize=12)
+        ax3.text(0.5, 0.5, "No se detectaron latidos completos válidos", ha="center", fontsize=12)
+    avisos = []
+    if descartados:
+        avisos.append("Descartados: " + "; ".join(f"{l['i_on'] / fs:.2f} s, {l['motivo']}" for l in descartados))
+    if resumen.get("avisos_calibracion"):
+        avisos.append("⚠ " + resumen["avisos_calibracion"])
+    if avisos:
+        ax3.text(0.5, 0.0, "\n".join(avisos), ha="center", va="bottom", fontsize=8.5, color="#c2410c",
+                 transform=ax3.transAxes, wrap=True)
     fig.suptitle(f"Control de calidad · {os.path.basename(ruta).replace('_control.png', '')}", fontsize=12, x=0.02, ha="left")
     fig.tight_layout()
     fig.savefig(ruta, dpi=110)

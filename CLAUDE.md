@@ -29,7 +29,8 @@ El usuario es cardiólogo (ecocardiografía), **no programador**. Usa Windows y 
 | Archivo | Función |
 |---|---|
 | `procesar.py` | Pipeline: lectura DICOM/PNG/JPG + calibración → recorte → ECG → envolvente (umbral adaptativo por profundidad, mediana/MAD por fila) → latidos → medidas clásicas → forma normalizada → textura (GLCM + PyRadiomics opcional) → figura de control. Parámetros en `PARAM`. |
-| `app.py` | Interfaz tkinter: elegir imágenes, calibración con 6 clics (`Calibrador`), reutilizar la última calibración, procesar y abrir resultados. |
+| `autocalibrar.py` | Calibración automática de capturas (Philips): línea de base naranja, región, escala de velocidad por OCR (RapidOCR) y marcas de 1 s; comprueba la FC del ECG frente a la de la pantalla. |
+| `app.py` | Interfaz tkinter: elegir imágenes, calibración automática; si falla, 6 clics (`Calibrador`) o reutilizar la última manual; procesar y abrir resultados. |
 | `calibrar.py` | Calibración por línea de comandos (uso avanzado). |
 | `sintetico.py` | Generador de imágenes CW sintéticas con verdad conocida (`*_verdad.json`). |
 | `validar_sintetico.py` | Validación: Bland-Altman e ICC frente a la verdad sintética. |
@@ -41,7 +42,10 @@ Salidas en `resultados/`:
 - `<imagen>_latidos.csv`
 - `<imagen>_curva_normalizada.csv`
 - `<imagen>_latidoN_normalizado.png`
-- `resumen_imagenes.csv`, con una fila por imagen, que se une a la hoja de recogida de datos por el ID (P001…).
+- `resumen_imagenes.csv`, con una fila por imagen, que se une a la hoja de recogida de datos por el ID (P001…). Valores principales = **latido más desfavorable** (mayor Vmax entre los válidos, sin latidos tras pausa); `media_*` = media de los latidos válidos.
+
+Prioridad de la calibración (`procesar.leer_imagen`): JSON manual hecho en la app (`"fuente": "manual"`) > DICOM > automática > JSON antiguo sin `fuente`.
+Imágenes reales de prueba en `muestras/` (P001-P004, Philips; no se suben a git).
 
 ## Cómo comprobar cambios
 Después de tocar `procesar.py`:
@@ -52,6 +56,7 @@ Después de tocar `procesar.py`:
 ## Problemas conocidos / pendientes
 - **AT:** sale unos 14 ms largo (16 % en los sintéticos) porque el clic de apertura valvular adelanta el inicio de la eyección.
 - **ET:** sale unos 26 ms largo.
+- **Vmax con punta tenue (P003):** la envolvente sigue el borde denso y no el plumeado; pendiente de contrastar con la Vmax del informe.
 - Un intento de detectar "mesetas" de clic en `_cruce` empeoró la imagen real y se revirtió.
 - Pendiente: script de anonimización DICOM (etiquetas y texto grabado), análisis de concordancia con las mediciones del informe, PCA funcional de las curvas normalizadas y comparación exploratoria entre severas y no severas.
 

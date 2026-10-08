@@ -1,0 +1,12 @@
+numpy>=1.26
+scipy>=1.11
+opencv-python>=4.8
+scikit-image>=0.22
+pydicom>=3.0
+matplotlib>=3.8
+pandas>=2.1
+scikit-learn>=1.4
+SimpleITK>=2.3
+# PyRadiomics (opcional, características de textura avanzadas).
+# La versión de PyPI puede fallar al compilar con Python 3.11+ / NumPy 2; la de GitHub funciona:
+pyradiomics @ git+https://github.com/AIM-Harvard/pyradiomics.git

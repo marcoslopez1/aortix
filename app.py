@@ -3,8 +3,9 @@ Aplicación con ventanas para analizar imágenes de Doppler continuo aórtico.
 Se abre con doble clic en "2_ANALIZAR_IMAGEN.bat" (Windows).
 
 1. Botón "Analizar imágenes…": eliges uno o varios archivos (DICOM, PNG o JPG).
-2. Si la imagen no trae calibración (PNG/JPG o DICOM sin ella), se abre una ventana
-   que te pide 6 clics sobre la imagen.
+2. La calibración es automática: se usa la del DICOM o, en capturas PNG/JPG, se leen la escala
+   de velocidad y las marcas de tiempo de la propia imagen. Solo si eso falla se abre una
+   ventana que pide 6 clics sobre la imagen.
 3. Se procesa y se abre la figura de control. Los resultados quedan en la carpeta "resultados"
    y en la tabla de la ventana (doble clic en una fila para abrir su figura).
 """
@@ -118,8 +119,7 @@ def tamano(ruta):
 
 
 def necesita_calibracion(ruta):
-    if os.path.exists(os.path.splitext(ruta)[0] + "_calibracion.json"):
-        return False
+    """True si no hay calibración manual, del DICOM ni automática."""
     try:
         P.leer_imagen(ruta)
         return False
@@ -249,7 +249,7 @@ class Calibrador(tk.Toplevel):
                                  x1=int(round(max(xa, xb))), y1=int(round(max(ya, yb)))),
                      linea_base_y=int(round(ybase)),
                      px_por_ms=abs(ymarca - ybase) / self.valor_ms,
-                     px_por_s=abs(xt2 - xt1) / self.segundos)
+                     px_por_s=abs(xt2 - xt1) / self.segundos, fuente="manual")
         if calib["px_por_ms"] < 5 or calib["px_por_s"] < 20:
             messagebox.showerror("Calibración", "La calibración no parece correcta "
                                  "(los clics de escala o de tiempo están demasiado juntos). Repite los pasos.",
@@ -312,11 +312,11 @@ class App(tk.Tk):
                            "Al terminar se abre la figura de control.",
                  font=(FUENTE, 10), fg=C["suave"], bg=C["tarjeta"]).pack(anchor="w", pady=(2, 10))
         self.reusar = tk.BooleanVar(value=True)
-        ttk.Checkbutton(izq, text="Usar la misma calibración que la imagen anterior "
-                                  "(mismo ecógrafo, misma escala y barrido)",
+        ttk.Checkbutton(izq, text="Si la calibración automática falla, usar la manual de la imagen anterior "
+                                  "(mismo tamaño)",
                         variable=self.reusar, style="Tarjeta.TCheckbutton").pack(anchor="w", pady=1)
         self.recal = tk.BooleanVar(value=False)
-        ttk.Checkbutton(izq, text="Volver a calibrar aunque ya exista una calibración",
+        ttk.Checkbutton(izq, text="Calibrar a mano (no usar la calibración automática)",
                         variable=self.recal, style="Tarjeta.TCheckbutton").pack(anchor="w", pady=1)
 
         # Tarjeta de resultados
@@ -416,10 +416,17 @@ class App(tk.Tk):
             cal = os.path.splitext(r)[0] + "_calibracion.json"
             if self.recal.get() and os.path.exists(cal):
                 os.remove(cal)
-            if necesita_calibracion(r) and self.reusar.get() and not self.recal.get() and self.reutilizar(r):
+            falta = True
+            if not self.recal.get():
+                self.escribir(f"\n· {os.path.basename(r)}: calibrando…\n")
+                self.update()
+                falta = necesita_calibracion(r)
+                if falta:
+                    self.escribir("  La calibración automática no ha funcionado.\n", "error")
+            if falta and self.reusar.get() and not self.recal.get() and self.reutilizar(r):
                 pass
-            elif necesita_calibracion(r):
-                self.escribir(f"\n· {os.path.basename(r)}: necesita calibración, sigue los pasos de la ventana…\n")
+            elif falta:
+                self.escribir(f"  {os.path.basename(r)}: calibración manual, sigue los pasos de la ventana…\n")
                 c = Calibrador(self, r)
                 try:
                     self.wait_window(c)
@@ -445,9 +452,10 @@ class App(tk.Tk):
             self.escribir(f"\n· {os.path.basename(ruta)}: tiene distinto tamaño que la imagen calibrada "
                           "antes; hay que calibrarla.\n")
             return False
+        ult["fuente"] = "manual (reutilizada)"
         with open(os.path.splitext(ruta)[0] + "_calibracion.json", "w") as f:
             json.dump(ult, f, indent=2)
-        self.escribir(f"\n· {os.path.basename(ruta)}: uso la calibración de la imagen anterior.\n")
+        self.escribir(f"  {os.path.basename(ruta)}: uso la calibración manual de la imagen anterior.\n")
         return True
 
     def analizar(self, ruta):
@@ -459,6 +467,10 @@ class App(tk.Tk):
         try:
             res, df, _ = P.procesar(ruta, SALIDA)
             fig = os.path.join(SALIDA, f"{res['imagen']}_control.png")
+            self.escribir(f"  Calibración {res['calibracion']}: {res['px_por_ms']:.1f} px por m/s, "
+                          f"{res['px_por_s']:.0f} px por segundo\n")
+            if res.get("avisos_calibracion"):
+                self.escribir(f"  ⚠ {res['avisos_calibracion']}\n", "error")
             if res["n_latidos"] == 0:
                 self.escribir("  No se detectó ningún latido completo. Revisa la figura de control "
                               "o repite la calibración.\n", "error")

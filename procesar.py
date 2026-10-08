@@ -52,25 +52,67 @@ PARAM = dict(
 # =============================================================================
 # 1. Lectura y calibración
 # =============================================================================
+_CACHE_AUTO = {}
+
+
 def leer_imagen(ruta, ruta_calib=None):
     """Devuelve (rgb uint8 HxWx3, calibración dict).
 
-    Si existe "<imagen>_calibracion.json" (o se pasa ruta_calib) se usa esa calibración;
-    si no, en un DICOM se lee la de la "Sequence of Ultrasound Regions"."""
-    if ruta_calib is None:
-        cand = os.path.splitext(ruta)[0] + "_calibracion.json"
-        ruta_calib = cand if os.path.exists(cand) else None
+    Orden de preferencia de la calibración:
+      1. la que se pasa en ruta_calib, o un "<imagen>_calibracion.json" hecho a mano en la aplicación;
+      2. la del DICOM ("Sequence of Ultrasound Regions");
+      3. la automática (autocalibrar.py: lee la escala y las marcas de tiempo de la propia imagen);
+      4. un "<imagen>_calibracion.json" antiguo (sin origen indicado)."""
+    cand = os.path.splitext(ruta)[0] + "_calibracion.json"
+    json_local = _leer_json(cand) if os.path.exists(cand) else None
+    json_antiguo = None
+    if ruta_calib is not None:
+        json_local = _leer_json(ruta_calib)
+    elif json_local is not None and not str(json_local.get("fuente", "")).startswith("manual"):
+        json_local, json_antiguo = None, json_local
     dicom = _es_dicom(ruta)
-    if dicom and ruta_calib is None:
-        return _leer_dicom(ruta)
+    if json_local is None and dicom:
+        try:
+            return _leer_dicom(ruta)
+        except ValueError:
+            pass  # DICOM sin calibración: se intenta la automática
     rgb = pixeles_dicom(ruta)[0] if dicom else cv2.cvtColor(cv2.imread(ruta, cv2.IMREAD_COLOR), cv2.COLOR_BGR2RGB)
-    if ruta_calib is None:
-        raise ValueError(f"{ruta}: imagen sin calibración; hay que calibrarla.")
-    with open(ruta_calib) as f:
-        c = json.load(f)
-    return rgb, dict(x0=c["region"]["x0"], y0=c["region"]["y0"], x1=c["region"]["x1"],
-                     y1=c["region"]["y1"], linea_base_y=c["linea_base_y"],
-                     px_por_ms=c["px_por_ms"], px_por_s=c["px_por_s"], fuente="calibración manual")
+    if json_local is not None:
+        return rgb, _cal_de_json(json_local, json_local.get("fuente", "calibración manual"))
+    auto = calibracion_automatica(ruta, rgb)
+    if auto is not None:
+        return rgb, auto
+    if json_antiguo is not None:
+        return rgb, _cal_de_json(json_antiguo, "calibración manual")
+    raise ValueError(f"{ruta}: no se ha podido calibrar automáticamente; hay que calibrarla a mano.")
+
+
+def calibracion_automatica(ruta, rgb):
+    """Calibración automática (con caché por archivo). None si no se ha podido."""
+    clave = (os.path.abspath(ruta), os.path.getmtime(ruta))
+    if clave not in _CACHE_AUTO:
+        import autocalibrar
+        try:
+            c, inf = autocalibrar.autocalibrar(rgb)
+        except Exception as ex:
+            c, inf = None, dict(error=str(ex), avisos=[])
+        _CACHE_AUTO[clave] = (_cal_de_json(c, "automática", inf) if c else None, inf)
+    return _CACHE_AUTO[clave][0]
+
+
+def _leer_json(ruta):
+    with open(ruta, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _cal_de_json(c, fuente, informe=None):
+    cal = dict(x0=c["region"]["x0"], y0=c["region"]["y0"], x1=c["region"]["x1"],
+               y1=c["region"]["y1"], linea_base_y=c["linea_base_y"],
+               px_por_ms=c["px_por_ms"], px_por_s=c["px_por_s"], fuente=fuente)
+    if informe is not None:
+        cal["fc_pantalla"] = informe.get("fc_pantalla")
+        cal["avisos_calibracion"] = "; ".join(informe.get("avisos", []))
+    return cal
 
 
 def _es_dicom(ruta):
@@ -133,11 +175,15 @@ def preprocesar(rgb, cal):
     reg = rgb[cal["y0"]:cal["y1"], cal["x0"]:cal["x1"]].astype(np.int16)
     sat = reg.max(-1) - reg.min(-1)
     color = sat > 40                                    # ECG, cursores y texto en color
-    verde = color & (reg[..., 1] > reg[..., 0] + 30) & (reg[..., 1] > reg[..., 2] + 30)
 
-    # ECG: fila media de los píxeles verdes en cada columna (más arriba = más positivo)
-    ecg = np.full(reg.shape[1], np.nan)
-    filas = np.arange(reg.shape[0])[:, None]
+    # ECG: fila media de los píxeles verdes en cada columna (más arriba = más positivo).
+    # Se busca también un poco por encima de la región, porque el trazado suele asomar por arriba.
+    ya = max(cal["y0"] - int(0.1 * rgb.shape[0]), 0)
+    banda = rgb[ya:cal["y1"], cal["x0"]:cal["x1"]].astype(np.int16)
+    verde = ((banda.max(-1) - banda.min(-1) > 40) & (banda[..., 1] > banda[..., 0] + 30)
+             & (banda[..., 1] > banda[..., 2] + 30))
+    ecg = np.full(banda.shape[1], np.nan)
+    filas = np.arange(banda.shape[0])[:, None]
     cnt = verde.sum(0)
     ok = cnt > 0
     ecg[ok] = -((filas * verde).sum(0)[ok] / cnt[ok])
@@ -478,13 +524,36 @@ def _pyradiomics(img, mask):
 
 
 def ecg_r(ecg, cal):
+    """Ondas R: el QRS es la parte del ECG con la pendiente más brusca (las ondas T son lentas).
+    Funciona con QRS positivos o negativos."""
     if ecg is None:
         return []
-    x = ecg - np.median(ecg)
-    if x.max() <= 0:
+    fs = cal["px_por_s"]
+    x = ndimage.median_filter(ecg, 3)
+    pend = np.abs(np.gradient(x))
+    pend = ndimage.uniform_filter1d(pend, max(3, int(round(0.03 * fs))))  # ventana de 30 ms
+    if pend.max() <= 0:
         return []
-    picos, _ = signal.find_peaks(x, height=0.5 * x.max(), distance=int(0.3 * cal["px_por_s"]))
-    return list(picos)
+    # separación mínima entre R: 60 % del ciclo dominante (autocorrelación); evita contar dos veces
+    # un mismo latido cuando el trazado está saturado y tiene dos bordes bruscos
+    dist = int(0.33 * fs)
+    p0 = pend - pend.mean()
+    ac = np.correlate(p0, p0, "full")[len(p0) - 1:]
+    lo, hi = int(0.33 * fs), min(int(2.0 * fs), len(ac) - 1)
+    if hi > lo + 2:
+        cand, _ = signal.find_peaks(ac[lo:hi])
+        if cand.size:
+            mejor = cand[ac[lo:hi][cand] >= 0.8 * ac[lo:hi][cand].max()][0]  # el primer pico casi máximo
+            dist = max(dist, int(0.6 * (lo + mejor)))
+    picos, _ = signal.find_peaks(pend, height=0.4 * np.percentile(pend, 99.5), distance=dist)
+    # posición de la R: el punto más alejado de la línea isoeléctrica dentro de ±50 ms
+    w = int(0.05 * fs)
+    iso = np.median(x)
+    r = []
+    for p in picos:
+        a, z = max(p - w, 0), min(p + w + 1, len(x))
+        r.append(a + int(np.argmax(np.abs(x[a:z] - iso))))
+    return r
 
 
 # =============================================================================
@@ -523,7 +592,8 @@ def procesar(ruta, salida, ruta_calib=None, ruta_verdad=None, p=PARAM, nombre=No
     else:
         fc = np.nan
     resumen = dict(imagen=nombre, n_latidos=len(lats), fc_lpm=fc, direccion_flujo=direccion,
-                   calibracion=cal.get("fuente"), px_por_ms=cal["px_por_ms"], px_por_s=cal["px_por_s"])
+                   calibracion=cal.get("fuente"), px_por_ms=cal["px_por_ms"], px_por_s=cal["px_por_s"],
+                   fc_pantalla_lpm=cal.get("fc_pantalla"), avisos_calibracion=cal.get("avisos_calibracion", ""))
     if len(df):
         num = df.select_dtypes("number").drop(columns=["latido", "inicio_s"])
         resumen.update(num.mean().to_dict())
@@ -634,7 +704,10 @@ def figura_control(rgb, cal, S, v, lats, curvas, r_peaks, direccion, df, resumen
         tb.auto_set_font_size(False)
         tb.set_fontsize(9)
         tb.scale(1, 1.45)
-        extra = (f"Latidos analizados: {len(df)}   ·   FC: {resumen['fc_lpm']:.0f} lpm   ·   "
+        fc_txt = f"FC: {resumen['fc_lpm']:.0f} lpm"
+        if resumen.get("fc_pantalla_lpm"):
+            fc_txt += f" (pantalla {resumen['fc_pantalla_lpm']:.0f})"
+        extra = (f"Latidos analizados: {len(df)}   ·   {fc_txt}   ·   "
                  f"Calibración: {resumen['calibracion']} ({cal['px_por_ms']:.1f} px/(m/s), {cal['px_por_s']:.0f} px/s)\n"
                  f"Forma: pico en {df['forma_u_pico'].mean():.2f}·ET · factor de forma {df['forma_area_norm'].mean():.3f} · "
                  f"asimetría {df['forma_asimetria'].mean():+.3f} · anchura al 80 % {df['forma_anchura_80'].mean():.2f}\n"
@@ -642,6 +715,9 @@ def figura_control(rgb, cal, S, v, lats, curvas, r_peaks, direccion, df, resumen
                  f"ensanchamiento IQR {df['tex_ensanchamiento_iqr_rel'].mean():.2f} · "
                  f"anchura del plumeado {df['tex_anchura_pluma_ms'].mean():.2f} m/s")
         ax3.text(0.5, 0.08, extra, ha="center", va="bottom", fontsize=9, transform=ax3.transAxes)
+        if resumen.get("avisos_calibracion"):
+            ax3.text(0.5, 0.0, "⚠ " + resumen["avisos_calibracion"], ha="center", va="bottom", fontsize=9,
+                     color="#d14343", transform=ax3.transAxes)
     else:
         ax3.text(0.5, 0.5, "No se detectaron latidos completos", ha="center", fontsize=12)
     fig.suptitle(f"Control de calidad · {os.path.basename(ruta).replace('_control.png', '')}", fontsize=12, x=0.02, ha="left")

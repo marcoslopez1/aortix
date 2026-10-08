@@ -8,6 +8,8 @@ pandas>=2.1
 scikit-learn>=1.4
 SimpleITK>=2.3
 pillow>=10.0
+# Lector de texto para la calibración automática (lee la escala y la FC de la pantalla)
+rapidocr_onnxruntime>=1.3
 # PyRadiomics es opcional y 1_INSTALAR.bat la intenta instalar aparte (si falla, todo funciona igual).
 # La versión de PyPI puede fallar al compilar con Python 3.11+ / NumPy 2; la de GitHub funciona:
 #   pip install https://github.com/AIM-Harvard/pyradiomics/archive/refs/heads/master.zip

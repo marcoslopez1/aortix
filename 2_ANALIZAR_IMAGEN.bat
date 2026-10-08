@@ -6,7 +6,7 @@ if not exist ".venv\Scripts\python.exe" (
   pause
   exit /b 1
 )
-".venv\Scripts\python.exe" -c "import cv2, pydicom, skimage, pandas, PIL, tkinter" 2>nul
+".venv\Scripts\python.exe" -c "import cv2, pydicom, skimage, pandas, PIL, tkinter, rapidocr_onnxruntime" 2>nul
 if errorlevel 1 (
   echo Faltan librerias. Haz doble clic en 1_INSTALAR.bat y vuelve a intentarlo.
   pause

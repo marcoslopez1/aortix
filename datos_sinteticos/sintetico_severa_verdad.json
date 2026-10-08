@@ -1,0 +1,52 @@
+{
+  "caso": "severa",
+  "semilla": 0,
+  "region": {
+    "x0": 60,
+    "y0": 300,
+    "x1": 980,
+    "y1": 735
+  },
+  "linea_base_y": 362,
+  "px_por_ms": 60.0,
+  "px_por_s": 300.0,
+  "parametros": {
+    "vmax": 4.6,
+    "et": 0.33,
+    "u_pico": 0.42,
+    "redondez": 0.75,
+    "hr": 68
+  },
+  "latidos": [
+    {
+      "inicio_s": 0.285,
+      "vmax_ms": 4.588,
+      "vti_cm": 104.97,
+      "grad_medio_mmHg": 46.83,
+      "grad_pico_mmHg": 84.19,
+      "at_ms": 138.9,
+      "et_ms": 330.8,
+      "at_et": 0.42
+    },
+    {
+      "inicio_s": 1.1843,
+      "vmax_ms": 4.551,
+      "vti_cm": 104.08,
+      "grad_medio_mmHg": 46.08,
+      "grad_pico_mmHg": 82.84,
+      "at_ms": 138.9,
+      "et_ms": 330.7,
+      "at_et": 0.42
+    },
+    {
+      "inicio_s": 2.0762,
+      "vmax_ms": 4.687,
+      "vti_cm": 109.76,
+      "grad_medio_mmHg": 48.88,
+      "grad_pico_mmHg": 87.88,
+      "at_ms": 142.2,
+      "et_ms": 338.6,
+      "at_et": 0.42
+    }
+  ]
+}

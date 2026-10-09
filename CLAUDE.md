@@ -30,7 +30,8 @@ El usuario es cardiólogo (ecocardiografía), **no programador**. Usa Windows y 
 |---|---|
 | `procesar.py` | Pipeline: lectura DICOM/PNG/JPG + calibración → recorte → ECG → envolvente (umbral adaptativo por profundidad, mediana/MAD por fila) → latidos → medidas clásicas → forma normalizada → textura (GLCM + PyRadiomics opcional) → figura de control. Parámetros en `PARAM`. |
 | `autocalibrar.py` | Calibración automática de capturas (Philips): línea de base naranja, región, escala de velocidad por OCR (RapidOCR) y marcas de 1 s; comprueba la FC del ECG frente a la de la pantalla. |
-| `app.py` | Interfaz tkinter: elegir imágenes, calibración automática; si falla, 6 clics (`Calibrador`) o reutilizar la última manual; procesar y abrir resultados. |
+| `app.py` | Interfaz tkinter con dos pestañas. **Análisis**: elegir imágenes y modo de calibración excluyente (`self.modo`: automática con 6 clics (`Calibrador`) si falla · siempre a mano · reutilizar la última manual); procesar, abrir resultados y ventana `FichaPaciente` (datos clínicos y etiqueta). **Datos**: visor de solo lectura de los CSV. |
+| `datos_clinicos.py` | Campos de la ficha del paciente (`CAMPOS`), guardado en `datos_clinicos.csv` y unión con `resumen_imagenes.csv` en `datos_combinados.csv`. |
 | `calibrar.py` | Calibración por línea de comandos (uso avanzado). |
 | `sintetico.py` | Generador de imágenes CW sintéticas con verdad conocida (`*_verdad.json`). |
 | `validar_sintetico.py` | Validación: Bland-Altman e ICC frente a la verdad sintética. |
@@ -43,6 +44,10 @@ Salidas en `resultados/`:
 - `<imagen>_curva_normalizada.csv`
 - `<imagen>_latidoN_normalizado.png`
 - `resumen_imagenes.csv`, con una fila por imagen, que se une a la hoja de recogida de datos por el ID (P001…). Valores principales = **latido más desfavorable** (mayor Vmax entre los válidos, sin latidos tras pausa); `media_*` = media de los latidos válidos.
+
+- `datos_clinicos.csv` (una fila por paciente: clínicas, `etiqueta`/`severa`, mediciones `informe_*`, `imagenes` asignadas) y
+  `datos_combinados.csv` (resumen + clínicas, una fila por imagen). Imagen → paciente: la asignada en la ficha o, si no, el código
+  al principio del nombre del archivo.
 
 Prioridad de la calibración (`procesar.leer_imagen`): JSON manual hecho en la app (`"fuente": "manual"`) > DICOM > automática > JSON antiguo sin `fuente`.
 Imágenes reales de prueba en `muestras/` (P001-P004, Philips; no se suben a git).

@@ -2,24 +2,29 @@
 Aplicación con ventanas para analizar imágenes de Doppler continuo aórtico.
 Se abre con doble clic en "2_ANALIZAR_IMAGEN.bat" (Windows).
 
-1. Botón "Analizar imágenes…": eliges uno o varios archivos (DICOM, PNG o JPG).
+1. Botón "Analizar imágenes": eliges uno o varios archivos (DICOM, PNG o JPG).
 2. La calibración es automática: se usa la del DICOM o, en capturas PNG/JPG, se leen la escala
    de velocidad y las marcas de tiempo de la propia imagen. Solo si eso falla se abre una
    ventana que pide 6 clics sobre la imagen.
 3. Se procesa y se abre la figura de control. Los resultados quedan en la carpeta "resultados"
    y en la tabla de la ventana (doble clic en una fila para abrir su figura).
+4. Se abre la ventana «Datos del paciente» (edad, sexo, factores de riesgo, etiqueta severa / no severa
+   y mediciones del informe). Todo es opcional salvo el código del paciente.
+5. La pestaña «Datos» muestra las tablas guardadas (solo lectura).
 """
 import json
 import os
 import sys
 import traceback
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from PIL import Image, ImageTk
+from PIL import Image, ImageDraw, ImageTk
 
 AQUI = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, AQUI)
+import datos_clinicos as D  # noqa: E402
 import procesar as P  # noqa: E402
 
 SALIDA = os.path.join(AQUI, "resultados")
@@ -41,12 +46,28 @@ C = dict(
     fondo="#eef2f6", tarjeta="#ffffff", borde="#dde3ea",
     cabecera="#0f2a44", cabecera_txt="#ffffff", cabecera_sub="#9fb6cc",
     texto="#1c2733", suave="#6b7a8c",
-    primario="#d63c3c", primario_hover="#b92f2f",
+    primario="#1f6feb", primario_hover="#1858c4", primario_off="#b9cdf0",
     secundario="#e6ebf1", secundario_hover="#d6dee8",
     ok="#1f9d55", error="#d14343", aviso="#c27c0e",
     oscuro="#14181d", oscuro2="#22282f", oscuro_hover="#323a44",
 )
 FUENTE = "Segoe UI"
+
+# Iconos: fuente de iconos de Windows (Segoe Fluent Icons en Windows 11, MDL2 en Windows 10);
+# si no está, un símbolo Unicode parecido.
+ICONOS = {
+    "abrir": ("", "📂"), "carpeta": ("", "📁"), "paciente": ("", "👤"),
+    "guardar": ("", "✔"), "cerrar": ("", "✕"), "deshacer": ("", "↶"),
+    "recargar": ("", "⟳"), "analisis": ("", "📈"), "tabla": ("", "☰"),
+}
+_FUENTE_ICONOS = []
+
+
+def fuente_iconos():
+    if not _FUENTE_ICONOS:
+        familias = set(tkfont.families())
+        _FUENTE_ICONOS.append(next((f for f in ("Segoe Fluent Icons", "Segoe MDL2 Assets") if f in familias), None))
+    return _FUENTE_ICONOS[0]
 
 
 def nitidez_windows():
@@ -59,21 +80,42 @@ def nitidez_windows():
             pass
 
 
-class Boton(tk.Label):
-    """Botón plano con cambio de color al pasar el ratón."""
+class Boton(tk.Frame):
+    """Botón plano con icono y cambio de color al pasar el ratón."""
 
     def __init__(self, master, text, command, fondo, hover, color="#ffffff", tam=11, negrita=False,
-                 padx=18, pady=9):
-        super().__init__(master, text=text, bg=fondo, fg=color, cursor="hand2", padx=padx, pady=pady,
-                         font=(FUENTE, tam, "bold" if negrita else "normal"))
+                 padx=18, pady=9, icono=None, apagado=None):
+        super().__init__(master, bg=fondo, cursor="hand2")
         self.command, self.fondo, self.hover, self.color, self.activo = command, fondo, hover, color, True
-        self.bind("<Enter>", lambda e: self.activo and self.config(bg=self.hover))
-        self.bind("<Leave>", lambda e: self.config(bg=self.fondo))
-        self.bind("<Button-1>", lambda e: self.activo and self.command())
+        self.apagado = apagado or C["suave"]
+        interior = tk.Frame(self, bg=fondo)
+        interior.pack(padx=padx, pady=pady)
+        self.partes = [self, interior]
+        if icono:
+            glifo, alternativo = ICONOS[icono]
+            fi = fuente_iconos()
+            ico = tk.Label(interior, text=glifo if fi else alternativo, bg=fondo, fg=color,
+                           font=(fi, tam) if fi else (FUENTE, tam))
+            ico.pack(side="left", padx=(0, 10))
+            self.partes.append(ico)
+        txt = tk.Label(interior, text=text, bg=fondo, fg=color, font=(FUENTE, tam, "bold" if negrita else "normal"))
+        txt.pack(side="left")
+        self.partes.append(txt)
+        for w in self.partes:
+            w.bind("<Enter>", lambda e: self.activo and self._fondo(self.hover))
+            w.bind("<Leave>", lambda e: self._fondo(self.fondo))
+            w.bind("<Button-1>", lambda e: self.activo and self.command())
+
+    def _fondo(self, color):
+        for w in self.partes:
+            w.config(bg=color)
 
     def activar(self, si):
         self.activo = si
-        self.config(cursor="hand2" if si else "watch", fg=self.color if si else "#f0c4c4")
+        for w in self.partes:
+            w.config(cursor="hand2" if si else "watch")
+            if isinstance(w, tk.Label):
+                w.config(fg=self.color if si else self.apagado)
 
 
 def abrir(ruta):
@@ -160,9 +202,10 @@ class Calibrador(tk.Toplevel):
         self.cv.create_image(0, 0, anchor="nw", image=self.foto)
         barra = tk.Frame(self, bg=C["oscuro"])
         barra.pack(fill="x", padx=16, pady=(0, 12))
-        Boton(barra, "↶  Deshacer último clic", self.deshacer, C["oscuro2"], C["oscuro_hover"],
-              tam=10).pack(side="left")
-        Boton(barra, "Cancelar", self.destroy, C["oscuro2"], C["oscuro_hover"], tam=10).pack(side="right")
+        Boton(barra, "Deshacer último clic", self.deshacer, C["oscuro2"], C["oscuro_hover"],
+              tam=10, icono="deshacer").pack(side="left")
+        Boton(barra, "Cancelar", self.destroy, C["oscuro2"], C["oscuro_hover"], tam=10,
+              icono="cerrar").pack(side="right")
         self.cv.bind("<Button-1>", self.clic)
         self.cv.bind("<Motion>", self.mover)
         self.cruz = []
@@ -265,6 +308,150 @@ class Calibrador(tk.Toplevel):
         self.destroy()
 
 
+class FichaPaciente(tk.Toplevel):
+    """Ventana «Datos del paciente»: datos clínicos y etiqueta. Guarda en resultados/datos_clinicos.csv."""
+
+    def __init__(self, master, imagen):
+        super().__init__(master)
+        self.imagen, self.ok, self.cargado = imagen, False, None
+        self.title(f"Datos del paciente · {imagen}")
+        self.configure(bg=C["fondo"])
+        self.resizable(False, False)
+        self.transient(master)
+
+        cab = tk.Frame(self, bg=C["cabecera"])
+        cab.pack(fill="x")
+        tk.Label(cab, text="Datos del paciente", font=(FUENTE, 15, "bold"), fg=C["cabecera_txt"],
+                 bg=C["cabecera"]).pack(anchor="w", padx=22, pady=(14, 0))
+        tk.Label(cab, text=f"Imagen {imagen} · todo es opcional salvo el código. "
+                           "No escribas nombres ni números de historia.",
+                 font=(FUENTE, 9), fg=C["cabecera_sub"], bg=C["cabecera"]).pack(anchor="w", padx=22, pady=(0, 14))
+
+        cuerpo = tk.Frame(self, bg=C["fondo"])
+        cuerpo.pack(fill="both", padx=18, pady=14)
+
+        # Código del paciente: el asignado antes a esta imagen o el del nombre del archivo
+        fila_id = master.tarjeta(cuerpo)
+        fila_id.grid(row=0, column=0, columnspan=2, sticky="ew", padx=4, pady=4)
+        tk.Label(fila_id, text="Código del paciente", font=(FUENTE, 10, "bold"), fg=C["texto"],
+                 bg=C["tarjeta"]).pack(side="left", padx=(14, 10), pady=10)
+        self.v_id = tk.StringVar(value=self.id_inicial())
+        e = ttk.Entry(fila_id, textvariable=self.v_id, width=12, font=(FUENTE, 11), style="Ficha.TEntry")
+        e.pack(side="left", pady=10)
+        e.bind("<FocusOut>", lambda _e: self.cargar(self.v_id.get().strip().upper()))
+        tk.Label(fila_id, text="p. ej. P001", font=(FUENTE, 9), fg=C["suave"],
+                 bg=C["tarjeta"]).pack(side="left", padx=10)
+
+        self.vars = {}
+        for g, grupo in enumerate(D.GRUPOS):
+            caja = master.tarjeta(cuerpo)
+            caja.grid(row=1 + g // 2, column=g % 2, sticky="nsew", padx=4, pady=4)
+            tk.Label(caja, text=grupo.upper(), font=(FUENTE, 8, "bold"), fg=C["suave"],
+                     bg=C["tarjeta"]).grid(row=0, column=0, columnspan=3, sticky="w", padx=14, pady=(10, 4))
+            campos = [c for c in D.CAMPOS if c[4] == grupo]
+            for i, (clave, etiqueta, tipo, detalle, _) in enumerate(campos, 1):
+                tk.Label(caja, text=etiqueta, font=(FUENTE, 10), fg=C["texto"], bg=C["tarjeta"],
+                         anchor="w", width=12).grid(row=i, column=0, sticky="w", padx=(14, 6), pady=3)
+                v = tk.StringVar()
+                if tipo == "num":
+                    w = ttk.Entry(caja, textvariable=v, width=9, font=(FUENTE, 10), style="Ficha.TEntry")
+                    unidad = detalle[2]
+                else:
+                    w = ttk.Combobox(caja, textvariable=v, values=["", *detalle], state="readonly", width=14,
+                                     font=(FUENTE, 10), style="Ficha.TCombobox")
+                    unidad = ""
+                w.grid(row=i, column=1, sticky="w", pady=3)
+                tk.Label(caja, text=unidad, font=(FUENTE, 9), fg=C["suave"], bg=C["tarjeta"],
+                         anchor="w", width=6).grid(row=i, column=2, sticky="w", padx=(6, 14))
+                self.vars[clave] = v
+            if grupo == "Paciente":
+                self.sc = tk.Label(caja, font=(FUENTE, 9), fg=C["suave"], bg=C["tarjeta"])
+                self.sc.grid(row=len(campos) + 1, column=0, columnspan=3, sticky="w", padx=14)
+            tk.Frame(caja, bg=C["tarjeta"], height=8).grid(row=99, column=0)
+        for k in ("peso_kg", "talla_cm"):
+            self.vars[k].trace_add("write", lambda *_: self.actualizar_sc())
+
+        botones = tk.Frame(self, bg=C["fondo"])
+        botones.pack(fill="x", padx=22, pady=(0, 16))
+        Boton(botones, "Guardar", self.guardar, C["primario"], C["primario_hover"], tam=11, negrita=True,
+              icono="guardar").pack(side="right")
+        Boton(botones, "Ahora no", self.destroy, C["secundario"], C["secundario_hover"], color=C["texto"],
+              tam=10, icono="cerrar").pack(side="right", padx=(0, 10))
+
+        self.cargar(self.v_id.get())
+        self.bind("<Return>", lambda _e: self.guardar())
+        self.bind("<Escape>", lambda _e: self.destroy())
+        self.lift()
+        self.attributes("-topmost", True)
+        self.after(300, lambda: self.attributes("-topmost", False))
+        e.focus_set()
+        self.grab_set()
+
+    def id_inicial(self):
+        for _, f in D.leer_clinicos(SALIDA).iterrows():
+            if self.imagen in str(f.get("imagenes") or "").split(";"):
+                return f["id"]
+        return D.id_desde_nombre(self.imagen)
+
+    def cargar(self, pid):
+        """Rellena la ventana con lo ya guardado para ese paciente."""
+        if not pid or pid == self.cargado:
+            return
+        datos = D.ficha(SALIDA, pid)
+        if not datos:
+            return
+        self.cargado = pid
+        for clave, _, tipo, detalle, _ in D.CAMPOS:
+            val = datos.get(clave)
+            if val is None:
+                txt = ""
+            elif tipo == "num":
+                txt = f"{float(val):g}".replace(".", ",")
+            else:
+                inverso = {str(v): k for k, v in detalle.items()}
+                txt = inverso.get(str(val), inverso.get(str(val).split(".")[0], ""))
+            self.vars[clave].set(txt)
+
+    def actualizar_sc(self):
+        try:
+            p = float(self.vars["peso_kg"].get().replace(",", "."))
+            t = float(self.vars["talla_cm"].get().replace(",", "."))
+            self.sc.config(text=f"Superficie corporal: {(p * t / 3600) ** 0.5:.2f} m²".replace(".", ","))
+        except ValueError:
+            self.sc.config(text="")
+
+    def guardar(self):
+        pid = self.v_id.get().strip().upper()
+        if not D.PATRON_ID.match(pid):
+            messagebox.showerror("Código del paciente",
+                                 "Escribe un código del tipo P001 (letras seguidas de números, sin espacios).",
+                                 parent=self)
+            return
+        valores = {"id": pid}
+        for clave, etiqueta, tipo, detalle, _ in D.CAMPOS:
+            txt = self.vars[clave].get().strip()
+            if not txt:
+                continue
+            if tipo == "opc":
+                valores[clave] = detalle[txt]
+                continue
+            try:
+                num = float(txt.replace(",", "."))
+            except ValueError:
+                messagebox.showerror("Dato no válido", f"{etiqueta}: «{txt}» no es un número.", parent=self)
+                return
+            mini, maxi, unidad = detalle
+            if not mini <= num <= maxi:
+                messagebox.showerror("Dato no válido",
+                                     f"{etiqueta}: {txt} {unidad} está fuera del rango esperado "
+                                     f"({mini:g}-{maxi:g} {unidad}).", parent=self)
+                return
+            valores[clave] = num
+        D.guardar_ficha(SALIDA, valores, self.imagen)
+        self.ok = True
+        self.destroy()
+
+
 class App(tk.Tk):
     COLUMNAS = [("imagen", "Imagen", 220, "w"), ("latidos", "Latidos", 70, "center"),
                 ("vmax", "Vmax (m/s)", 95, "center"), ("grad", "Grad. medio (mmHg)", 140, "center"),
@@ -275,10 +462,12 @@ class App(tk.Tk):
         super().__init__()
         self.title("Doppler continuo · Estenosis aórtica")
         self.f = self.winfo_fpixels("1i") / 96  # escalado de Windows (100 %, 125 %, 150 %…)
-        self.geometry(f"{self.px(1040)}x{self.px(720)}")
-        self.minsize(self.px(860), self.px(560))
+        # sin pasar del alto útil de la pantalla (descontando la barra de tareas)
+        self.geometry(f"{self.px(1040)}x{min(self.px(780), self.winfo_screenheight() - self.px(90))}+40+20")
+        self.minsize(self.px(860), self.px(700))
         self.configure(bg=C["fondo"])
         self.figuras = {}  # fila de la tabla -> ruta de la figura de control
+        self.imagenes = {}  # fila de la tabla -> nombre de la imagen
         self.estilos()
 
         # Cabecera
@@ -287,22 +476,44 @@ class App(tk.Tk):
         tk.Label(cab, text="Doppler continuo aórtico", font=(FUENTE, 18, "bold"),
                  fg=C["cabecera_txt"], bg=C["cabecera"]).pack(anchor="w", padx=28, pady=(18, 0))
         tk.Label(cab, text="Morfología de la curva y textura del espectro · prueba de concepto",
-                 font=(FUENTE, 10), fg=C["cabecera_sub"], bg=C["cabecera"]).pack(anchor="w", padx=28, pady=(0, 18))
+                 font=(FUENTE, 10), fg=C["cabecera_sub"], bg=C["cabecera"]).pack(anchor="w", padx=28, pady=(0, 10))
+
+        # Pestañas
+        barra_p = tk.Frame(cab, bg=C["cabecera"])
+        barra_p.pack(anchor="w", padx=20)
+        self.pestanas = {}
+        for clave, texto, icono in (("analisis", "Análisis", "analisis"), ("datos", "Datos", "tabla")):
+            caja = tk.Frame(barra_p, bg=C["cabecera"], cursor="hand2")
+            caja.pack(side="left", padx=(0, 6))
+            fila = tk.Frame(caja, bg=C["cabecera"])
+            fila.pack(padx=10, pady=(4, 6))
+            fi = fuente_iconos()
+            glifo, alternativo = ICONOS[icono]
+            ico = tk.Label(fila, text=glifo if fi else alternativo, font=(fi, 11) if fi else (FUENTE, 11),
+                           bg=C["cabecera"])
+            ico.pack(side="left", padx=(0, 8))
+            txt = tk.Label(fila, text=texto, font=(FUENTE, 11, "bold"), bg=C["cabecera"])
+            txt.pack(side="left")
+            raya = tk.Frame(caja, height=3, bg=C["cabecera"])
+            raya.pack(fill="x")
+            for w in (caja, fila, ico, txt):
+                w.bind("<Button-1>", lambda _e, k=clave: self.mostrar(k))
+            self.pestanas[clave] = (ico, txt, raya)
 
         cuerpo = tk.Frame(self, bg=C["fondo"])
-        cuerpo.pack(fill="both", expand=True, padx=24, pady=20)
+        self.vistas = {"analisis": cuerpo}
 
         # Tarjeta de acciones
         acc = self.tarjeta(cuerpo)
         acc.pack(fill="x")
         der = tk.Frame(acc, bg=C["tarjeta"])
-        der.pack(side="right", padx=20, pady=18)
-        self.b1 = Boton(der, "📂   Analizar imágenes…", self.elegir, C["primario"], C["primario_hover"],
-                        tam=12, negrita=True, padx=26, pady=12)
+        der.pack(side="right", anchor="n", padx=20, pady=18)
+        # Mismo tamaño de letra y relleno: los dos botones miden lo mismo; el principal se distingue por el color
+        self.b1 = Boton(der, "Analizar imágenes", self.elegir, C["primario"], C["primario_hover"],
+                        tam=11, negrita=True, padx=22, pady=11, icono="abrir", apagado=C["primario_off"])
         self.b1.pack(fill="x")
-        Boton(der, "Abrir carpeta de resultados", lambda: (os.makedirs(SALIDA, exist_ok=True), abrir(SALIDA)),
-              C["secundario"], C["secundario_hover"], color=C["texto"], tam=10).pack(fill="x", pady=(8, 0))
-
+        Boton(der, "Abrir carpeta de resultados", self.abrir_salida, C["secundario"], C["secundario_hover"],
+              color=C["texto"], tam=11, padx=22, pady=11, icono="carpeta").pack(fill="x", pady=(8, 0))
 
         izq = tk.Frame(acc, bg=C["tarjeta"])
         izq.pack(side="left", fill="both", expand=True, padx=20, pady=18)
@@ -310,14 +521,21 @@ class App(tk.Tk):
                  bg=C["tarjeta"]).pack(anchor="w")
         tk.Label(izq, text="DICOM, PNG o JPG. Puedes elegir varias a la vez. "
                            "Al terminar se abre la figura de control.",
-                 font=(FUENTE, 10), fg=C["suave"], bg=C["tarjeta"]).pack(anchor="w", pady=(2, 10))
-        self.reusar = tk.BooleanVar(value=True)
-        ttk.Checkbutton(izq, text="Si la calibración automática falla, usar la manual de la imagen anterior "
-                                  "(mismo tamaño)",
-                        variable=self.reusar, style="Tarjeta.TCheckbutton").pack(anchor="w", pady=1)
-        self.recal = tk.BooleanVar(value=False)
-        ttk.Checkbutton(izq, text="Calibrar a mano (no usar la calibración automática)",
-                        variable=self.recal, style="Tarjeta.TCheckbutton").pack(anchor="w", pady=1)
+                 font=(FUENTE, 10), fg=C["suave"], bg=C["tarjeta"]).pack(anchor="w", pady=(2, 0))
+
+        self.seccion(izq, "Calibración")
+        self.modo = tk.StringVar(value="auto")
+        for valor, texto in (
+                ("auto", "Automática; si falla, calibrar a mano"),
+                ("manual", "Calibrar a mano (sin calibración automática)"),
+                ("anterior", "Misma calibración manual que la imagen anterior")):
+            ttk.Radiobutton(izq, text=texto, value=valor, variable=self.modo,
+                            style="Tarjeta.TRadiobutton").pack(anchor="w", pady=1)
+
+        self.seccion(izq, "Datos del paciente")
+        self.pedir = tk.BooleanVar(value=True)
+        ttk.Checkbutton(izq, text="Pedir los datos del paciente (clínicos y etiqueta) después de cada imagen",
+                        variable=self.pedir, style="Tarjeta.TCheckbutton").pack(anchor="w", pady=1)
 
         # Tarjeta de resultados
         tab = self.tarjeta(cuerpo)
@@ -326,8 +544,10 @@ class App(tk.Tk):
         cab_tab.pack(fill="x", padx=20, pady=(14, 8))
         tk.Label(cab_tab, text="Resultados de esta sesión", font=(FUENTE, 13, "bold"), fg=C["texto"],
                  bg=C["tarjeta"]).pack(side="left")
-        tk.Label(cab_tab, text="Valores del latido más desfavorable · doble clic en una fila para ver su figura",
-                 font=(FUENTE, 9), fg=C["suave"], bg=C["tarjeta"]).pack(side="right")
+        Boton(cab_tab, "Datos del paciente", self.editar_ficha, C["secundario"], C["secundario_hover"],
+              color=C["texto"], tam=9, padx=12, pady=5, icono="paciente").pack(side="right")
+        tk.Label(cab_tab, text="Latido más desfavorable · doble clic en una fila para ver su figura",
+                 font=(FUENTE, 9), fg=C["suave"], bg=C["tarjeta"]).pack(side="right", padx=12)
         marco = tk.Frame(tab, bg=C["tarjeta"])
         marco.pack(fill="both", expand=True, padx=20)
         self.tabla = ttk.Treeview(marco, columns=[c[0] for c in self.COLUMNAS], show="headings",
@@ -346,33 +566,166 @@ class App(tk.Tk):
         self.tabla.bind("<Double-1>", self.ver_figura)
 
         # Registro de mensajes
-        tk.Label(tab, text="Registro", font=(FUENTE, 9, "bold"), fg=C["suave"],
-                 bg=C["tarjeta"]).pack(anchor="w", padx=20, pady=(12, 2))
+        # (se empaqueta antes que la tabla para que la tabla no lo aplaste en ventanas bajas)
         self.log = tk.Text(tab, height=6, font=("Consolas", 9), bg="#f7f9fb", fg=C["texto"],
                            relief="flat", highlightthickness=1, highlightbackground=C["borde"],
                            padx=10, pady=6, wrap="word")
-        self.log.pack(fill="x", padx=20, pady=(0, 16))
+        self.log.pack(side="bottom", fill="x", padx=20, pady=(0, 16), before=marco)
+        tk.Label(tab, text="Registro", font=(FUENTE, 9, "bold"), fg=C["suave"],
+                 bg=C["tarjeta"]).pack(side="bottom", anchor="w", padx=20, pady=(12, 2), before=marco)
         self.log.tag_configure("error", foreground=C["error"])
 
         # Barra de estado
         self.estado = tk.Label(self, text="Listo", anchor="w", font=(FUENTE, 9), fg=C["suave"],
                                bg=C["fondo"])
-        self.estado.pack(side="bottom", fill="x", padx=26, pady=(0, 10), before=cuerpo)
-        self.escribir("Listo. Pulsa «Analizar imágenes…».\n")
+        self.estado.pack(side="bottom", fill="x", padx=26, pady=(0, 10))
+        self.vistas["datos"] = self.vista_datos()
+        self.mostrar("analisis")
+        self.escribir("Listo. Pulsa «Analizar imágenes».\n")
+
+    # ---- pestañas ----
+    def mostrar(self, clave):
+        for k, v in self.vistas.items():
+            v.pack_forget()
+            ico, txt, raya = self.pestanas[k]
+            activa = k == clave
+            for w in (ico, txt):
+                w.config(fg=C["cabecera_txt"] if activa else C["cabecera_sub"])
+            raya.config(bg=C["primario"] if activa else C["cabecera"])
+        self.vistas[clave].pack(fill="both", expand=True, padx=24, pady=20, after=self.estado)
+        if clave == "datos":
+            self.cargar_tabla()
+
+    TABLAS = {"Combinada: imágenes + datos clínicos": D.ARCH_COMBINADO,
+              "Imágenes (medidas de la curva)": D.ARCH_RESUMEN,
+              "Datos clínicos y etiqueta": D.ARCH_CLINICOS}
+
+    def vista_datos(self):
+        cuerpo = tk.Frame(self, bg=C["fondo"])
+        t = self.tarjeta(cuerpo)
+        t.pack(fill="both", expand=True)
+        cab = tk.Frame(t, bg=C["tarjeta"])
+        cab.pack(fill="x", padx=20, pady=(14, 4))
+        tk.Label(cab, text="Datos guardados", font=(FUENTE, 13, "bold"), fg=C["texto"],
+                 bg=C["tarjeta"]).pack(side="left")
+        Boton(cab, "Abrir carpeta", self.abrir_salida, C["secundario"], C["secundario_hover"],
+              color=C["texto"], tam=9, padx=12, pady=5, icono="carpeta").pack(side="right")
+        Boton(cab, "Actualizar", self.cargar_tabla, C["secundario"], C["secundario_hover"],
+              color=C["texto"], tam=9, padx=12, pady=5, icono="recargar").pack(side="right", padx=(0, 8))
+        self.v_tabla = tk.StringVar(value=next(iter(self.TABLAS)))
+        cb = ttk.Combobox(cab, textvariable=self.v_tabla, values=list(self.TABLAS), state="readonly",
+                          width=34, font=(FUENTE, 10), style="Ficha.TCombobox")
+        cb.pack(side="right", padx=(0, 12))
+        cb.bind("<<ComboboxSelected>>", lambda _e: self.cargar_tabla())
+        self.info_tabla = tk.Label(t, font=(FUENTE, 9), fg=C["suave"], bg=C["tarjeta"], anchor="w")
+        self.info_tabla.pack(fill="x", padx=20, pady=(0, 8))
+
+        marco = tk.Frame(t, bg=C["tarjeta"])
+        marco.pack(fill="both", expand=True, padx=20, pady=(0, 16))
+        self.datos = ttk.Treeview(marco, show="headings", style="Resultados.Treeview", selectmode="browse")
+        bv = ttk.Scrollbar(marco, orient="vertical", command=self.datos.yview)
+        bh = ttk.Scrollbar(marco, orient="horizontal", command=self.datos.xview)
+        self.datos.configure(yscrollcommand=bv.set, xscrollcommand=bh.set)
+        self.datos.grid(row=0, column=0, sticky="nsew")
+        bv.grid(row=0, column=1, sticky="ns")
+        bh.grid(row=1, column=0, sticky="ew")
+        marco.rowconfigure(0, weight=1)
+        marco.columnconfigure(0, weight=1)
+        self.datos.tag_configure("par", background="#f7f9fb")
+        return cuerpo
+
+    def cargar_tabla(self):
+        """Muestra el CSV elegido (solo lectura)."""
+        import pandas as pd
+        arch = self.TABLAS[self.v_tabla.get()]
+        ruta = os.path.join(SALIDA, arch)
+        try:
+            if arch == D.ARCH_COMBINADO:
+                d = D.combinar(SALIDA)
+            elif os.path.exists(ruta):
+                d = pd.read_csv(ruta)
+            else:
+                d = pd.DataFrame()
+        except Exception as ex:
+            d = pd.DataFrame()
+            self.info_tabla.config(text=f"No se ha podido leer {arch}: {ex}", fg=C["error"])
+        else:
+            if len(d):
+                txt = f"{arch} · {len(d)} fila(s) · {len(d.columns)} columnas · solo lectura"
+                if "etiqueta" in d:
+                    n = d["etiqueta"].value_counts()
+                    txt += (f" · severas {n.get('severa', 0)}, no severas {n.get('no severa', 0)}, "
+                            f"dudosas {n.get('dudosa', 0)}, sin etiqueta {int(d['etiqueta'].isna().sum())}")
+                self.info_tabla.config(text=txt, fg=C["suave"])
+            else:
+                self.info_tabla.config(text=f"Todavía no hay datos en {arch}.", fg=C["suave"])
+        self.datos.delete(*self.datos.get_children())
+        cols = list(d.columns)
+        self.datos["columns"] = cols
+        fuente = tkfont.Font(family=FUENTE, size=10)
+        filas = [[self.formato(v) for v in fila] for fila in d.itertuples(index=False)]
+        for j, c in enumerate(cols):
+            ancho = max([fuente.measure(c)] + [fuente.measure(f[j]) for f in filas[:200]]) + self.px(24)
+            self.datos.heading(c, text=c, anchor="w")
+            self.datos.column(c, width=min(max(ancho, self.px(60)), self.px(280)), anchor="w", stretch=False)
+        for i, f in enumerate(filas):
+            self.datos.insert("", "end", values=f, tags=("par",) if i % 2 else ())
+
+    @staticmethod
+    def formato(v):
+        if isinstance(v, float):
+            if v != v:  # NaN
+                return ""
+            if v.is_integer() and abs(v) < 1e6:
+                return str(int(v))
+            return f"{v:.3f}".rstrip("0").rstrip(".")
+        return str(v)
+
+    def abrir_salida(self):
+        os.makedirs(SALIDA, exist_ok=True)
+        abrir(SALIDA)
+
+    # ---- datos del paciente ----
+    def pedir_ficha(self, imagen):
+        f = FichaPaciente(self, imagen)
+        try:
+            self.wait_window(f)
+        except tk.TclError:
+            pass
+        if f.ok:
+            self.escribir(f"  Datos del paciente guardados ({D.ARCH_CLINICOS}).\n")
+
+    def editar_ficha(self):
+        sel = self.tabla.focus()
+        if not sel or sel not in self.imagenes:
+            messagebox.showinfo("Datos del paciente", "Elige primero una imagen analizada en la tabla.",
+                                parent=self)
+            return
+        self.pedir_ficha(self.imagenes[sel])
 
     def estilos(self):
         s = ttk.Style(self)
         s.theme_use("clam")
-        s.configure("Tarjeta.TCheckbutton", background=C["tarjeta"], foreground=C["texto"], font=(FUENTE, 10))
-        s.map("Tarjeta.TCheckbutton", background=[("active", C["tarjeta"])],
-              indicatorbackground=[("selected", C["primario"]), ("!selected", C["tarjeta"])],
-              indicatorforeground=[("selected", "#ffffff")])
-        s.configure("Tarjeta.TCheckbutton", indicatorsize=self.px(13), indicatormargin=(0, 0, self.px(6), 0),
-                    bordercolor=C["borde"], upperbordercolor=C["borde"], lowerbordercolor=C["borde"])
+        self.indicadores(s)
         s.configure("Vertical.TScrollbar", background=C["secundario"], troughcolor=C["tarjeta"],
                     bordercolor=C["tarjeta"], arrowcolor=C["suave"], lightcolor=C["secundario"],
                     darkcolor=C["secundario"], gripcount=0)
         s.map("Vertical.TScrollbar", background=[("active", C["secundario_hover"])])
+        s.configure("Horizontal.TScrollbar", background=C["secundario"], troughcolor=C["tarjeta"],
+                    bordercolor=C["tarjeta"], arrowcolor=C["suave"], lightcolor=C["secundario"],
+                    darkcolor=C["secundario"], gripcount=0)
+        s.map("Horizontal.TScrollbar", background=[("active", C["secundario_hover"])])
+        s.configure("Ficha.TEntry", padding=(6, 4), bordercolor=C["borde"], lightcolor=C["borde"],
+                    fieldbackground="#ffffff")
+        s.map("Ficha.TEntry", bordercolor=[("focus", C["primario"])], lightcolor=[("focus", C["primario"])])
+        s.configure("Ficha.TCombobox", padding=(6, 4), bordercolor=C["borde"], lightcolor=C["borde"],
+                    arrowcolor=C["suave"], background=C["tarjeta"])
+        s.map("Ficha.TCombobox", fieldbackground=[("readonly", "#ffffff")],
+              bordercolor=[("focus", C["primario"])], selectbackground=[("readonly", "#ffffff")],
+              selectforeground=[("readonly", C["texto"])])
+        self.option_add("*TCombobox*Listbox.font", (FUENTE, 10))
+        self.option_add("*TCombobox*Listbox.selectBackground", "#dbe7f5")
+        self.option_add("*TCombobox*Listbox.selectForeground", C["texto"])
         s.configure("Resultados.Treeview", font=(FUENTE, 10), rowheight=self.px(30), background=C["tarjeta"],
                     fieldbackground=C["tarjeta"], foreground=C["texto"], borderwidth=0)
         s.configure("Resultados.Treeview.Heading", font=(FUENTE, 9, "bold"), background="#f1f4f8",
@@ -382,11 +735,66 @@ class App(tk.Tk):
               foreground=[("selected", C["texto"])])
         s.layout("Resultados.Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
 
+    def indicadores(self, s):
+        """Casilla (marca ✓) y opción excluyente (punto) dibujadas con suavizado, con estado al pasar el ratón
+        o al recibir el foco con el teclado."""
+        k = 4  # se dibuja a 4× y se reduce para suavizar los bordes
+        lado, hueco = self.px(18), self.px(8)
+        N, H = lado * k, (lado + hueco) * k
+        reposo, linea = "#8a97a6", max(k, int(1.6 * k * self.f))
+
+        def imagen(dibujar):
+            im = Image.new("RGBA", (H, N), (0, 0, 0, 0))
+            dibujar(ImageDraw.Draw(im))
+            return ImageTk.PhotoImage(im.resize((lado + hueco, lado), Image.LANCZOS), master=self)
+
+        def casilla(borde, relleno=None, marca=False):
+            def f(d):
+                d.rounded_rectangle([k, k, N - k, N - k], radius=4 * k, outline=borde, width=linea,
+                                    fill=relleno or C["tarjeta"])
+                if marca:
+                    d.line([(0.26 * N, 0.52 * N), (0.43 * N, 0.69 * N), (0.75 * N, 0.33 * N)],
+                           fill="#ffffff", width=int(2.2 * k * self.f), joint="curve")
+            return imagen(f)
+
+        def opcion(borde, punto=False):
+            def f(d):
+                d.ellipse([k, k, N - k, N - k], outline=borde, width=linea, fill=C["tarjeta"])
+                if punto:
+                    d.ellipse([0.29 * N, 0.29 * N, 0.71 * N, 0.71 * N], fill=borde)
+            return imagen(f)
+
+        P_, PH = C["primario"], C["primario_hover"]
+        self._ind = {
+            "c_no": casilla(reposo), "c_hover": casilla(P_), "c_si": casilla(P_, P_, True),
+            "c_si_hover": casilla(PH, PH, True),
+            "r_no": opcion(reposo), "r_hover": opcion(P_), "r_si": opcion(P_, True), "r_si_hover": opcion(PH, True),
+        }
+        i = self._ind
+        s.element_create("Tarjeta.ind_casilla", "image", i["c_no"],
+                         ("selected", "active", i["c_si_hover"]), ("selected", i["c_si"]),
+                         ("active", i["c_hover"]), ("focus", i["c_hover"]), sticky="w")
+        s.element_create("Tarjeta.ind_opcion", "image", i["r_no"],
+                         ("selected", "active", i["r_si_hover"]), ("selected", i["r_si"]),
+                         ("active", i["r_hover"]), ("focus", i["r_hover"]), sticky="w")
+        for estilo, elemento in (("Tarjeta.TCheckbutton", "Tarjeta.ind_casilla"),
+                                 ("Tarjeta.TRadiobutton", "Tarjeta.ind_opcion")):
+            s.layout(estilo, [("Checkbutton.padding", {"sticky": "nswe", "children": [
+                (elemento, {"side": "left", "sticky": ""}),
+                ("Checkbutton.label", {"side": "left", "sticky": "nswe"})]})])
+            s.configure(estilo, background=C["tarjeta"], foreground=C["texto"], font=(FUENTE, 10), padding=(0, 2))
+            s.map(estilo, background=[("active", C["tarjeta"])])
+
     def px(self, n):
         return int(round(n * self.f))
 
+    def seccion(self, master, titulo):
+        tk.Label(master, text=titulo.upper(), font=(FUENTE, 8, "bold"), fg=C["suave"],
+                 bg=C["tarjeta"]).pack(anchor="w", pady=(14, 3))
+
     def tarjeta(self, master):
-        return tk.Frame(master, bg=C["tarjeta"], highlightthickness=1, highlightbackground=C["borde"])
+        return tk.Frame(master, bg=C["tarjeta"], highlightthickness=1, highlightbackground=C["borde"],
+                        highlightcolor=C["borde"])
 
     def escribir(self, txt, tag=None):
         self.log.insert("end", txt, tag)
@@ -413,19 +821,22 @@ class App(tk.Tk):
         self.abrir_figura = len(rutas) == 1
         for i, r in enumerate(rutas, 1):
             self.estado.config(text=f"Imagen {i} de {len(rutas)} · {os.path.basename(r)}")
-            cal = os.path.splitext(r)[0] + "_calibracion.json"
-            if self.recal.get() and os.path.exists(cal):
-                os.remove(cal)
-            falta = True
-            if not self.recal.get():
-                self.escribir(f"\n· {os.path.basename(r)}: calibrando…\n")
-                self.update()
+            modo = self.modo.get()
+            self.escribir(f"\n· {os.path.basename(r)}: calibrando…\n")
+            self.update()
+            if modo == "manual":
+                cal = os.path.splitext(r)[0] + "_calibracion.json"
+                if os.path.exists(cal):
+                    os.remove(cal)
+                falta = True
+            elif modo == "anterior":
+                # sin calibración anterior o con otro tamaño de imagen: se calibra a mano y pasa a ser la anterior
+                falta = not self.reutilizar(r)
+            else:
                 falta = necesita_calibracion(r)
                 if falta:
                     self.escribir("  La calibración automática no ha funcionado.\n", "error")
-            if falta and self.reusar.get() and not self.recal.get() and self.reutilizar(r):
-                pass
-            elif falta:
+            if falta:
                 self.escribir(f"  {os.path.basename(r)}: calibración manual, sigue los pasos de la ventana…\n")
                 c = Calibrador(self, r)
                 try:
@@ -446,11 +857,11 @@ class App(tk.Tk):
         """Copia la última calibración a esta imagen si tiene el mismo tamaño. Devuelve True si lo hace."""
         ult = leer_ultima()
         if not ult:
+            self.escribir("  Todavía no hay ninguna calibración manual anterior; hay que calibrarla.\n", "error")
             return False
         tam = tamano(ruta)
         if ult.get("tamano_imagen") and tam and ult["tamano_imagen"] != tam:
-            self.escribir(f"\n· {os.path.basename(ruta)}: tiene distinto tamaño que la imagen calibrada "
-                          "antes; hay que calibrarla.\n")
+            self.escribir("  Tiene distinto tamaño que la imagen calibrada antes; hay que calibrarla.\n", "error")
             return False
         ult["fuente"] = "manual (reutilizada)"
         with open(os.path.splitext(ruta)[0] + "_calibracion.json", "w") as f:
@@ -491,11 +902,14 @@ class App(tk.Tk):
                     f"{res['vti_cm']:.1f}", f"{res['at_et']:.2f}", estado],
                     "aviso" if res.get("avisos_calibracion") else "ok")
             self.figuras[fila] = fig
+            self.imagenes[fila] = res["imagen"]
             self.actualizar_resumen(res)
             self.escribir(f"  Figura de control: {fig}\n")
             if getattr(self, "abrir_figura", True):
                 abrir(fig)
+            analizada = res["imagen"]
         except Exception as ex:
+            analizada = None
             self.escribir(f"  ERROR: {ex}\n", "error")
             self.fila(os.path.basename(ruta), ["–"] * 5 + ["✗ Error (ver registro)"], "error")
             with open(os.path.join(SALIDA, "errores.log"), "a", encoding="utf-8") as f:
@@ -503,6 +917,8 @@ class App(tk.Tk):
         finally:
             self.b1.activar(True)
             self.config(cursor="")
+        if analizada and self.pedir.get():
+            self.pedir_ficha(analizada)
 
     def actualizar_resumen(self, res):
         import pandas as pd
@@ -512,6 +928,7 @@ class App(tk.Tk):
             d = d[d["imagen"] != res["imagen"]]
         d = pd.concat([d, pd.DataFrame([res])], ignore_index=True)
         d.to_csv(ruta, index=False)
+        D.combinar(SALIDA)
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ las medidas clásicas y las características de forma y textura que alimentarán
 |---|---|
 | `1_INSTALAR.bat` · `2_ANALIZAR_IMAGEN.bat` | **Doble clic**: instalar (una vez) y analizar imágenes. |
 | `app.py` | La aplicación con ventanas que abre `2_ANALIZAR_IMAGEN.bat`. |
+| `datos_clinicos.py` | Guarda los datos clínicos y la etiqueta de cada paciente y los une a las medidas de la imagen. |
 | `procesar.py` | El procesado completo (pasos 4.1 a 4.7). Acepta DICOM, PNG o JPG, o una carpeta entera. |
 | `autocalibrar.py` | Calibración **automática** de capturas PNG/JPG: lee la escala de velocidad, las marcas de tiempo y la línea de base de la propia imagen. |
 | `calibrar.py` | Calibración manual por línea de comandos (uso avanzado). |
@@ -23,7 +24,7 @@ las medidas clásicas y las características de forma y textura que alimentarán
 ## 1. Uso con doble clic (Windows)
 
 1. **Solo la primera vez:** doble clic en **`1_INSTALAR.bat`**. Se abre una ventana negra que instala todo y termina con «LISTO». Si no tienes Python, te dirá dónde descargarlo; al instalarlo marca *«Add Python to PATH»*.
-2. **Cada vez que quieras analizar:** doble clic en **`2_ANALIZAR_IMAGEN.bat`** → botón **«Analizar imágenes…»** → eliges la imagen (o varias).
+2. **Cada vez que quieras analizar:** doble clic en **`2_ANALIZAR_IMAGEN.bat`** → botón **«Analizar imágenes»** → eliges la imagen (o varias).
 3. **La calibración es automática.** Los DICOM traen la suya. En las capturas PNG/JPG el programa lee de la propia imagen:
    - la línea de base (la línea naranja) y la región del espectro;
    - la escala de velocidad: lee los números de la regla de la derecha, en cm/s o m/s;
@@ -31,9 +32,21 @@ las medidas clásicas y las características de forma y textura que alimentarán
 
    Como comprobación compara la FC de las ondas R del ECG con la que marca la pantalla. Si no coinciden, lo avisa en rojo.
    Solo si la calibración automática falla se abre la ventana de **6 clics** (esquinas del espectro · línea de base · una marca de la escala · dos marcas de tiempo).
-   La casilla **«Calibrar a mano»** fuerza esa ventana aunque la automática funcione. La calibración manual se guarda junto a la imagen y tiene prioridad en adelante.
+   En la sección **Calibración** se elige una de tres opciones:
+   - **Automática; si falla, calibrar a mano** (la habitual).
+   - **Calibrar a mano**: abre siempre la ventana de 6 clics, aunque la automática funcione.
+   - **Misma calibración manual que la imagen anterior**: útil para varias capturas del mismo equipo y ajuste.
+     Si todavía no hay ninguna o la imagen tiene otro tamaño, se pide calibrarla a mano y esa pasa a ser la anterior.
+
+   La calibración manual se guarda junto a la imagen y tiene prioridad en adelante.
    Puedes elegir varias imágenes a la vez: se procesan seguidas y al final se abre la carpeta de resultados.
 4. Al terminar se abre la **figura de control**. Todo queda en la carpeta **`resultados`** (botón «Abrir carpeta de resultados»).
+5. Después se abre la ventana **«Datos del paciente»**: código (P001…), edad, sexo, peso y talla, factores de riesgo, ritmo, FEVI, bajo flujo,
+   la **etiqueta** (severa / no severa / dudosa y de dónde sale) y las mediciones del informe (Vmax, gradiente medio, VTI, área valvular).
+   Todo es opcional salvo el código. «Ahora no» la cierra sin guardar; luego se puede rellenar con el botón **«Datos del paciente»**
+   (eligiendo antes la imagen en la tabla). La casilla «Pedir los datos del paciente…» (sección Datos del paciente) desactiva esta ventana.
+   **No escribas nombres ni números de historia**: solo el código y la edad.
+6. La pestaña **«Datos»** muestra las tablas guardadas (solo lectura): la combinada, la de imágenes y la de datos clínicos.
 
 En `ejemplo_real/` está la figura del JASE 2017 (Philips, 150 mm/s) ya calibrada y procesada: Vmax 4,30 m/s, gradiente medio 45 mmHg, ET ≈ 275-280 ms (la figura marca ≈ 279 ms).
 
@@ -65,6 +78,14 @@ Para el conjunto: **`resumen_imagenes.csv`**, con una fila por imagen. Es la tab
 - Las columnas `media_*` son la media de todos los latidos válidos y las columnas `cv_*` son el coeficiente de variación entre latidos.
 - `latido_referencia`, `n_descartados` y `motivos_descarte` indican qué latido se ha usado y qué se ha descartado.
 - `calibracion`, `fc_pantalla_lpm` y `avisos_calibracion` indican el origen de la calibración y el resultado de la comprobación con la FC.
+
+Datos del paciente (se crean desde la aplicación):
+
+- **`datos_clinicos.csv`**: una fila por paciente con lo introducido en la ventana. Las variables sí/no se guardan como 1/0;
+  `severa` vale 1 (severa), 0 (no severa) o queda vacía (dudosa o sin etiqueta); `sc_m2` es la superficie corporal (Mosteller);
+  `imagenes` lista las imágenes asignadas a ese paciente.
+- **`datos_combinados.csv`**: `resumen_imagenes.csv` + datos clínicos, una fila por imagen. Es la tabla para el análisis.
+  Las columnas `informe_*` permiten comparar lo que mide el programa con lo que midió el ecocardiografista.
 
 ### Control de calidad de cada latido
 
